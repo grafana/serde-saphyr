@@ -178,6 +178,12 @@ pub(crate) fn is_plain_block_value_safe(s: &str) -> bool {
         return false;
     }
 
+    // Strings containing double quotes anywhere need quoting (will use single quotes)
+    // This matches Go's yaml.v3 behavior
+    if s.contains('"') {
+        return false;
+    }
+
     if bytes[0].is_ascii_whitespace()
         || matches!(
             bytes[0],
