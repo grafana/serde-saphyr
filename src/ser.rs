@@ -695,9 +695,12 @@ impl<'a, W: Write> YamlSer<'a, W> {
     /// Write a quoted string, preferring single quotes when possible (matching Go's yaml.v3).
     /// Falls back to double quotes when the string contains single quotes or needs escaping.
     fn write_quoted(&mut self, s: &str) -> Result<()> {
-        // Prefer single quotes if:
-        // 1. String doesn't contain single quotes
-        // 2. String doesn't contain characters that need escaping (control chars, newlines, etc.)
+        // Match Go's yaml.v3 quoting behavior:
+        // - Default to double quotes
+        // - Use single quotes ONLY when string contains double quotes but no single quotes
+        //   (to avoid escaping the double quotes)
+        let contains_double_quote = s.contains('"');
+        let contains_single_quote = s.contains('\'');
         let needs_escaping = s.chars().any(|c| {
             c.is_control()
                 || matches!(
@@ -717,13 +720,17 @@ impl<'a, W: Write> YamlSer<'a, W> {
                 )
         });
 
-        if !s.contains('\'') && !needs_escaping {
-            // Use single quotes - no escaping needed
+        // Use single quotes only if:
+        // 1. String contains double quotes (avoids \"escaping)
+        // 2. String doesn't contain single quotes
+        // 3. String doesn't need escaping (control chars can't be escaped in single quotes)
+        if contains_double_quote && !contains_single_quote && !needs_escaping {
+            // Use single quotes - string has " but no ' and no control chars
             self.out.write_char('\'')?;
             self.out.write_str(s)?;
             self.out.write_char('\'')?;
         } else {
-            // Use double quotes with escaping
+            // Use double quotes (default) with escaping as needed
             self.out.write_char('"')?;
             for ch in s.chars() {
                 match ch {
