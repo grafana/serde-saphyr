@@ -48,11 +48,13 @@ fn flowseq_strings_are_quoted_when_needed() -> anyhow::Result<()> {
     let yaml = serde_saphyr::to_string(&FlowSeq(&samples))?;
 
     // Expect all elements to be appropriately quoted/escaped in a flow sequence, with trailing newline.
-    // Single quotes are preferred when no escaping is needed; double quotes are used for escapes.
+    // Double quotes are preferred by default (matching Go's yaml.v3);
+    // Single quotes are used only when the string contains double quotes (to avoid escaping).
+    // Note: Some special characters like '#', '.', '-' use single quotes in flow context.
     let serialized = concat!(
-        r##"['a, [], b', '{', '}', '[', ']', ',', '#', ':', '@', '`', "##,
-        r##"'n', 'true', 'False', '~', 'null', 'YES', 'no', 'off', 'On', '100', '1e3', '3.14', "##,
-        r##"'.nan', '-.inf', ' leading', He said "hi", C:\path, "line1\nline2", "##,
+        r##"["a, [], b", "{", "}", "[", "]", ",", '#', ":", "@", "`", "##,
+        r##""n", "true", "False", "~", "null", "YES", "no", "off", "On", "100", "1e3", "3.14", "##,
+        r##"".nan", "-.inf", " leading", He said "hi", C:\path, "line1\nline2", "##,
         r##""\tindent", '.', '-']"##,
         "\n"
     );
