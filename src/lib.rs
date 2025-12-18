@@ -9,7 +9,7 @@ use crate::budget::EnforcingPolicy;
 use crate::de::{Ev, Events};
 use crate::live_events::LiveEvents;
 use crate::parse_scalars::scalar_is_nullish;
-pub use crate::serializer_options::SerializerOptions;
+pub use crate::serializer_options::{ChompIndicator, SerializerOptions};
 use serde::de::DeserializeOwned;
 use std::io::Read;
 

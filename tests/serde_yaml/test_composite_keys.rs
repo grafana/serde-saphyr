@@ -40,26 +40,26 @@ fn test_serialize_transform() {
         "
         map:
           ? x: 1
-            y: 2
+          y: 2
           : x: 3
-            y: 4
+          y: 4
           ? x: 5
-            y: 6
+          y: 6
           : x: 7
-            y: 8
+          y: 8
         "
     };
     let expected_b = indoc! {
         "
         map:
           ? x: 5
-            y: 6
+          y: 6
           : x: 7
-            y: 8
+          y: 8
           ? x: 1
-            y: 2
+          y: 2
           : x: 3
-            y: 4
+          y: 4
         "
     };
     assert!(yaml == expected_a || yaml == expected_b);

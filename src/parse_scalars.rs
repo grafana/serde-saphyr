@@ -252,6 +252,16 @@ where
         ".nan" | "+.nan" | "-.nan" => Ok(T::nan()),
         ".inf" | "+.inf" => Ok(T::infinity()),
         "-.inf" => Ok(T::neg_infinity()),
+        // Rust's parser accepts "infinity"/"inf" but these are NOT valid YAML 1.2 floats.
+        // YAML 1.2 only allows .inf/.nan syntax. Reject these so they stay as plain strings.
+        // Note: We still let "nan"/"-nan" fall through to Rust's parser, which will return
+        // NaN. This causes them to be quoted (which is desired for safety).
+        "infinity" | "+infinity" | "-infinity" | "inf" | "+inf" | "-inf" => {
+            Err(Error::msg(format!(
+                "invalid YAML 1.2 float (bare {} not allowed, use .inf)",
+                lower
+            )).with_location(location))
+        }
         _ => t.parse::<T>().map_err(|_| {
             Error::msg(format!(
                 "invalid floating point ({} value)",
