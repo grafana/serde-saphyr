@@ -68,6 +68,19 @@ pub struct SerializerOptions {
     ///
     /// Default: `false` (preserves backwards compatibility)
     pub empty_array_as_brackets: bool,
+    /// Maximum line width for automatic line wrapping.
+    ///
+    /// When set to `Some(width)`, long string values that exceed the specified width
+    /// (after accounting for indentation) will be automatically wrapped using YAML
+    /// folded block scalar style (`>`). This matches Go's yaml.v3 behavior with
+    /// `encoder.SetWidth(80)`.
+    ///
+    /// - `None`: No automatic wrapping (default, preserves backwards compatibility)
+    /// - `Some(80)`: Wrap lines at 80 characters (common default, matches Go yaml.v3)
+    ///
+    /// Note: This only affects block-style output. Flow-style contexts (inline
+    /// sequences/maps) do not support block scalars and will use quoted strings.
+    pub line_width: Option<usize>,
 }
 
 // Below this length, block-string wrappers serialize as regular scalars
@@ -92,6 +105,7 @@ impl Default for SerializerOptions {
             prefer_block_scalars: false,
             empty_map_as_braces: false,
             empty_array_as_brackets: false,
+            line_width: None,
         }
     }
 }

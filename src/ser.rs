@@ -454,6 +454,9 @@ pub struct YamlSer<'a, W: Write> {
     empty_map_as_braces: bool,
     /// When true, empty arrays are serialized as `[]` instead of being left empty.
     empty_array_as_brackets: bool,
+    /// Maximum line width for automatic line wrapping of long strings.
+    /// When Some(width), long strings are wrapped using folded block style.
+    line_width: Option<usize>,
 }
 
 impl<'a, W: Write> YamlSer<'a, W> {
@@ -487,6 +490,7 @@ impl<'a, W: Write> YamlSer<'a, W> {
             prefer_block_scalars: false,
             empty_map_as_braces: false,
             empty_array_as_brackets: false,
+            line_width: None,
         }
     }
     /// Construct a `YamlSer` with a specific indentation step.
@@ -510,6 +514,7 @@ impl<'a, W: Write> YamlSer<'a, W> {
         s.prefer_block_scalars = options.prefer_block_scalars;
         s.empty_map_as_braces = options.empty_map_as_braces;
         s.empty_array_as_brackets = options.empty_array_as_brackets;
+        s.line_width = options.line_width;
         s
     }
 
@@ -624,11 +629,16 @@ impl<'a, W: Write> YamlSer<'a, W> {
         Ok(())
     }
 
-    /// Write a folded block string body, wrapping to FOLDED_WRAP_COL characters.
+    /// Write a folded block string body, wrapping to the specified column width.
     /// Preserves blank lines between paragraphs. Each emitted line is indented
     /// exactly at `indent` depth. Wrapping prefers breaking at the last whitespace not
     /// exceeding the limit; if none is present, performs a hard break.
-    fn write_folded_block(&mut self, s: &str, indent: usize) -> Result<()> {
+    fn write_folded_block_with_width(
+        &mut self,
+        s: &str,
+        indent: usize,
+        wrap_col: usize,
+    ) -> Result<()> {
         for line in s.split('\n') {
             if line.is_empty() {
                 // Preserve empty lines between paragraphs
@@ -645,7 +655,7 @@ impl<'a, W: Write> YamlSer<'a, W> {
                     last_space_byte = Some(i);
                 }
                 col += 1;
-                if col > self.folded_wrap_col {
+                if col > wrap_col {
                     let break_at = last_space_byte.unwrap_or(i);
                     // Emit [start, break_at)
                     self.write_indent(indent)?;
@@ -679,6 +689,11 @@ impl<'a, W: Write> YamlSer<'a, W> {
             }
         }
         Ok(())
+    }
+
+    /// Write a folded block string body using the configured `folded_wrap_col`.
+    fn write_folded_block(&mut self, s: &str, indent: usize) -> Result<()> {
+        self.write_folded_block_with_width(s, indent, self.folded_wrap_col)
     }
 
     /// Write a scalar either as plain or as double-quoted with minimal escapes.
@@ -1108,6 +1123,40 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
                 self.newline()?;
             }
             return Ok(());
+        }
+
+        // Automatic line wrapping for long strings when line_width is set
+        // This matches Go's yaml.v3 behavior with encoder.SetWidth()
+        if let Some(max_width) = self.line_width {
+            // Only wrap in block context (not in flow style)
+            if self.in_flow == 0 && !v.contains('\n') {
+                // Calculate the body indentation for the folded block
+                let body_base = if self.current_map_depth.unwrap_or(0) == 0 {
+                    self.depth + 1
+                } else {
+                    self.current_map_depth.unwrap_or(self.depth)
+                };
+                // Calculate effective width accounting for body indentation
+                let body_indent_chars = body_base.saturating_mul(self.indent_step);
+                let effective_width = max_width.saturating_sub(body_indent_chars);
+                // Wrap if string exceeds available width
+                if v.chars().count() > effective_width && effective_width > 0 {
+                    self.write_space_if_pending()?;
+                    let base = if let Some(d) = self.after_dash_depth {
+                        d
+                    } else {
+                        self.current_map_depth.unwrap_or(self.depth)
+                    };
+                    if self.at_line_start {
+                        self.write_indent(base)?;
+                    }
+                    self.out.write_str(">")?;
+                    self.newline()?;
+                    // Use effective_width for wrapping to respect line_width
+                    self.write_folded_block_with_width(v, body_base, effective_width)?;
+                    return Ok(());
+                }
+            }
         }
 
         self.write_space_if_pending()?;
