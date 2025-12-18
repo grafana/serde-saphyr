@@ -40,9 +40,11 @@ use std::fmt::{self, Write};
 use std::rc::{Rc, Weak as RcWeak};
 use std::sync::{Arc, Weak as ArcWeak};
 
-use crate::serializer_options::{SerializerOptions, FOLDED_WRAP_CHARS, MIN_FOLD_CHARS};
+use crate::serializer_options::{
+    ChompIndicator, FOLDED_WRAP_CHARS, MIN_FOLD_CHARS, SerializerOptions,
+};
 use crate::{ArcAnchor, ArcWeakAnchor, RcAnchor, RcWeakAnchor};
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use nohash_hasher::BuildNoHashHasher;
 
 // ------------------------------------------------------------
@@ -50,7 +52,7 @@ use nohash_hasher::BuildNoHashHasher;
 // ------------------------------------------------------------
 
 pub use crate::ser_error::Error;
-use crate::ser_quoting::{is_plain_safe, is_plain_value_safe};
+use crate::ser_quoting::{is_plain_block_value_safe, is_plain_safe, is_plain_value_safe};
 
 /// Result alias.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -140,7 +142,7 @@ pub struct Commented<T>(pub T, pub String);
 /// assert!(out.starts_with("|\n  "));
 /// ```
 ///
-/// As a mapping value:
+/// As a mapping value (string without trailing newline uses strip indicator `|-`):
 /// ```rust
 /// use serde::Serialize;
 /// #[derive(Serialize)]
@@ -159,7 +161,7 @@ pub struct LitStr<'a>(pub &'a str);
 ///
 /// See also: [FoldStr], [FoldString].
 ///
-/// Example
+/// Example (string without trailing newline uses strip indicator `|-`):
 /// ```rust
 /// let out = serde_saphyr::to_string(&serde_saphyr::LitString("line 1\nline 2".to_string())).unwrap();
 /// assert_eq!(out, "|-\n  line 1\n  line 2\n");
@@ -397,6 +399,8 @@ pub struct YamlSer<'a, W: Write> {
     out: &'a mut W,
     /// Spaces per indentation level for block-style collections.
     indent_step: usize,
+    /// Spaces per indentation level for sequences (arrays). If None, uses indent_step.
+    indent_array: Option<usize>,
     /// Threshold for downgrading block-string wrappers to plain scalars.
     min_fold_chars: usize,
     /// Wrap width for folded block scalars ('>').
@@ -408,7 +412,7 @@ pub struct YamlSer<'a, W: Write> {
 
     // Anchors:
     /// Map from pointer identity to anchor id.
-    anchors: HashMap<usize, AnchorId, BuildNoHashHasher<usize>>, 
+    anchors: HashMap<usize, AnchorId, BuildNoHashHasher<usize>>,
     /// Next numeric id to use when generating anchor names (1-based).
     next_anchor_id: AnchorId,
     /// If set, the next scalar/complex node to be emitted will be prefixed with this `&anchor`.
@@ -432,12 +436,6 @@ pub struct YamlSer<'a, W: Write> {
     pending_inline_comment: Option<String>,
     /// If true, emit YAML tags for simple enums that serialize to a single scalar.
     tagged_enums: bool,
-    /// If true, empty maps are emitted as {} and lists as []
-    empty_as_braces: bool,
-    /// If true, automatically prefer YAML block scalars for plain strings:
-    ///  - Strings containing newlines use literal style `|`.
-    ///  - Single-line strings longer than `folded_wrap_col` use folded style `>`.
-    prefer_block_scalars: bool,
     /// When the previous token was a list item dash ("- ") and the next node is a mapping,
     /// emit the first key inline on the same line ("- key: value").
     pending_inline_map: bool,
@@ -450,8 +448,33 @@ pub struct YamlSer<'a, W: Write> {
     /// If a sequence element starts with a dash on this depth, capture that depth so
     /// struct-variant mappings emitted immediately after can indent their fields correctly.
     after_dash_depth: Option<usize>,
+    /// Count of consecutive inline dashes (for `- - - map:` style nested sequences).
+    /// Used to calculate proper indentation when a map follows multiple inline dashes.
+    inline_dash_count: usize,
     /// Current block map indentation depth (for aligning sequences under a map key).
     current_map_depth: Option<usize>,
+    /// Extra spaces to add to indentation (used for aligning inline map fields after array dash when indent doesn't divide evenly).
+    indent_offset: usize,
+    /// When true, strings containing newlines are automatically serialized using
+    /// YAML literal block scalar style (`|`) instead of quoted strings with escape sequences.
+    prefer_block_scalars: bool,
+    /// When true, empty maps are serialized as `{}` instead of being left empty/null.
+    empty_map_as_braces: bool,
+    /// When true, empty arrays are serialized as `[]` instead of being left empty.
+    empty_array_as_brackets: bool,
+    /// Maximum line width for automatic line wrapping of long strings.
+    /// When Some(width), long strings are wrapped using folded block style.
+    line_width: Option<usize>,
+    /// When true, large floats may use scientific notation (e.g., 1e+11).
+    /// When false, floats are always written in plain decimal notation.
+    use_scientific_notation: bool,
+    /// Override for block scalar chomp indicator. When Some, forces the specified
+    /// chomp behavior instead of auto-detecting based on trailing newlines.
+    block_scalar_chomp: Option<ChompIndicator>,
+    /// Length of the last serialized map key (for accurate line width calculation).
+    last_key_len: usize,
+    /// When true, string keys that look like numbers are quoted in the output.
+    quote_numeric_strings: bool,
 }
 
 impl<'a, W: Write> YamlSer<'a, W> {
@@ -461,6 +484,7 @@ impl<'a, W: Write> YamlSer<'a, W> {
         Self {
             out,
             indent_step: 2,
+            indent_array: None,
             min_fold_chars: MIN_FOLD_CHARS,
             folded_wrap_col: FOLDED_WRAP_CHARS,
             depth: 0,
@@ -473,16 +497,24 @@ impl<'a, W: Write> YamlSer<'a, W> {
             pending_flow: None,
             in_flow: 0,
             pending_str_style: None,
+            pending_str_from_auto: false,
             pending_inline_comment: None,
             tagged_enums: false,
-                        empty_as_braces: true,
-            prefer_block_scalars: true,
             pending_inline_map: false,
             pending_space_after_colon: false,
             inline_map_after_dash: false,
             after_dash_depth: None,
+            inline_dash_count: 0,
             current_map_depth: None,
-            pending_str_from_auto: false,
+            indent_offset: 0,
+            prefer_block_scalars: false,
+            empty_map_as_braces: false,
+            empty_array_as_brackets: false,
+            line_width: None,
+            use_scientific_notation: true,
+            block_scalar_chomp: None,
+            last_key_len: 0,
+            quote_numeric_strings: false,
         }
     }
     /// Construct a `YamlSer` with a specific indentation step.
@@ -490,6 +522,7 @@ impl<'a, W: Write> YamlSer<'a, W> {
     pub fn with_indent(out: &'a mut W, indent_step: usize) -> Self {
         let mut s = Self::new(out);
         s.indent_step = indent_step;
+        s.indent_array = None;
         s
     }
     /// Construct a `YamlSer` from user-supplied [`SerializerOptions`].
@@ -497,12 +530,18 @@ impl<'a, W: Write> YamlSer<'a, W> {
     pub fn with_options(out: &'a mut W, options: &mut SerializerOptions) -> Self {
         let mut s = Self::new(out);
         s.indent_step = options.indent_step;
+        s.indent_array = options.indent_array;
         s.min_fold_chars = options.min_fold_chars;
         s.folded_wrap_col = options.folded_wrap_chars;
         s.anchor_gen = options.anchor_generator.take();
         s.tagged_enums = options.tagged_enums;
-        s.empty_as_braces = options.empty_as_braces;
         s.prefer_block_scalars = options.prefer_block_scalars;
+        s.empty_map_as_braces = options.empty_map_as_braces;
+        s.empty_array_as_brackets = options.empty_array_as_brackets;
+        s.line_width = options.line_width;
+        s.use_scientific_notation = options.use_scientific_notation;
+        s.block_scalar_chomp = options.block_scalar_chomp;
+        s.quote_numeric_strings = options.quote_numeric_strings;
         s
     }
 
@@ -577,7 +616,30 @@ impl<'a, W: Write> YamlSer<'a, W> {
     #[inline]
     fn write_indent(&mut self, depth: usize) -> Result<()> {
         if self.at_line_start {
-            for _k in 0..self.indent_step * depth {
+            for _k in 0..(self.indent_step * depth + self.indent_offset) {
+                self.out.write_char(' ')?;
+            }
+            self.at_line_start = false;
+        }
+        Ok(())
+    }
+
+    /// Ensure indentation is written for sequences (arrays) if we are at the start of a line.
+    /// Uses indent_array if set, otherwise falls back to indent_step.
+    /// When indent_array is 0, uses indent_step for base indentation (no additional array nesting).
+    #[inline]
+    fn write_indent_seq(&mut self, depth: usize) -> Result<()> {
+        if self.at_line_start {
+            let step = match self.indent_array {
+                Some(0) => {
+                    // When indent_array is 0, use indent_step for the base indentation
+                    // This means array items align with their parent context
+                    self.indent_step
+                }
+                Some(n) => n,
+                None => self.indent_step,
+            };
+            for _k in 0..step * depth {
                 self.out.write_char(' ')?;
             }
             self.at_line_start = false;
@@ -594,11 +656,16 @@ impl<'a, W: Write> YamlSer<'a, W> {
         Ok(())
     }
 
-    /// Write a folded block string body, wrapping to FOLDED_WRAP_COL characters.
+    /// Write a folded block string body, wrapping to the specified column width.
     /// Preserves blank lines between paragraphs. Each emitted line is indented
     /// exactly at `indent` depth. Wrapping prefers breaking at the last whitespace not
     /// exceeding the limit; if none is present, performs a hard break.
-    fn write_folded_block(&mut self, s: &str, indent: usize) -> Result<()> {
+    fn write_folded_block_with_width(
+        &mut self,
+        s: &str,
+        indent: usize,
+        wrap_col: usize,
+    ) -> Result<()> {
         // Precompute indent prefix for this block body and reuse it for each emitted line.
         let mut indent_buf: String = String::new();
         let spaces = self.indent_step * indent;
@@ -627,7 +694,7 @@ impl<'a, W: Write> YamlSer<'a, W> {
                     last_space_byte = Some(i);
                 }
                 col += 1;
-                if col > self.folded_wrap_col {
+                if col > wrap_col {
                     let break_at = last_space_byte.unwrap_or(i);
                     // Emit [start, break_at)
                     self.out.write_str(indent_str)?;
@@ -637,7 +704,11 @@ impl<'a, W: Write> YamlSer<'a, W> {
                     self.out.write_str(slice)?;
                     self.newline()?;
                     // Advance start: skip the whitespace if we broke at space
-                    start = if let Some(sp) = last_space_byte { sp + 1 } else { break_at };
+                    start = if let Some(sp) = last_space_byte {
+                        sp + 1
+                    } else {
+                        break_at
+                    };
                     // Reset trackers starting at new segment. We intentionally do not try
                     // to recompute `col` relative to the current `i` because `start` may
                     // have advanced past `i` when we broke at the current whitespace.
@@ -662,6 +733,11 @@ impl<'a, W: Write> YamlSer<'a, W> {
         Ok(())
     }
 
+    /// Write a folded block string body using the configured `folded_wrap_col`.
+    fn write_folded_block(&mut self, s: &str, indent: usize) -> Result<()> {
+        self.write_folded_block_with_width(s, indent, self.folded_wrap_col)
+    }
+
     /// Write a scalar either as plain or as double-quoted with minimal escapes.
     /// Called by most `serialize_*` primitive methods.
     fn write_plain_or_quoted(&mut self, s: &str) -> Result<()> {
@@ -673,54 +749,420 @@ impl<'a, W: Write> YamlSer<'a, W> {
         }
     }
 
-    /// Write a double-quoted string with necessary escapes.
+    /// Write a quoted string, choosing between single and double quotes (matching Go's yaml.v3).
+    /// - Double quotes: for strings that look like other YAML types (empty, bool, number, null)
+    ///   or when escaping is needed (control chars, etc.)
+    /// - Single quotes: for strings that just need quoting due to special syntax chars
+    ///   (internal single quotes are escaped by doubling: ' → '')
     fn write_quoted(&mut self, s: &str) -> Result<()> {
-        self.out.write_char('"')?;
-        for ch in s.chars() {
-            match ch {
-                '\\' => self.out.write_str("\\\\")?,
-                '"' => self.out.write_str("\\\"")?,
-                // YAML named escapes for common control characters
-                '\0' => self.out.write_str("\\0")?,
-                '\u{7}' => self.out.write_str("\\a")?,
-                '\u{8}' => self.out.write_str("\\b")?,
-                '\t' => self.out.write_str("\\t")?,
-                '\n' => self.out.write_str("\\n")?,
-                '\u{b}' => self.out.write_str("\\v")?,
-                '\u{c}' => self.out.write_str("\\f")?,
-                '\r' => self.out.write_str("\\r")?,
-                '\u{1b}' => self.out.write_str("\\e")?,
-                // Unicode BOM should use the standard \u escape rather than Rust's \u{...}
-                '\u{FEFF}' => self.out.write_str("\\uFEFF")?,
-                // YAML named escapes for Unicode separators
-                '\u{0085}' => self.out.write_str("\\N")?,
-                '\u{2028}' => self.out.write_str("\\L")?,
-                '\u{2029}' => self.out.write_str("\\P")?,
-                c if (c as u32) <= 0xFF
-                    && (c.is_control() || (0x7F..=0x9F).contains(&(c as u32))) =>
-                {
-                    write!(self.out, "\\x{:02X}", c as u32)?
+        let needs_escaping = s.chars().any(|c| {
+            c.is_control()
+                || matches!(
+                    c,
+                    '\n' | '\r'
+                        | '\t'
+                        | '\0'
+                        | '\u{7}'
+                        | '\u{8}'
+                        | '\u{b}'
+                        | '\u{c}'
+                        | '\u{1b}'
+                        | '\u{FEFF}'
+                        | '\u{0085}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                )
+        });
+
+        // Check if string looks like another YAML type (needs double quotes to disambiguate)
+        let looks_like_other_type = s.is_empty()
+            || s == "~"
+            || s.eq_ignore_ascii_case("null")
+            || s.eq_ignore_ascii_case("true")
+            || s.eq_ignore_ascii_case("false")
+            || s.eq_ignore_ascii_case("yes")
+            || s.eq_ignore_ascii_case("no")
+            || s.eq_ignore_ascii_case("on")
+            || s.eq_ignore_ascii_case("off")
+            || s.parse::<i64>().is_ok()
+            || s.parse::<f64>().is_ok()
+            || crate::ser_quoting::looks_like_date_or_timestamp(s);
+
+        // Use single quotes unless:
+        // 1. String needs escaping (control chars can't be escaped in single quotes)
+        // 2. String looks like another YAML type (Go uses double quotes for those)
+        // Internal single quotes are escaped by doubling (' → '')
+        let use_single_quotes = !needs_escaping && !looks_like_other_type;
+        if use_single_quotes {
+            // Use single quotes - escape internal ' by doubling to ''
+            self.out.write_char('\'')?;
+            for ch in s.chars() {
+                if ch == '\'' {
+                    self.out.write_str("''")?;
+                } else {
+                    self.out.write_char(ch)?;
                 }
-                c if (c as u32) <= 0xFFFF
-                    && (c.is_control() || (0x7F..=0x9F).contains(&(c as u32))) =>
-                {
-                    write!(self.out, "\\u{:04X}", c as u32)?
+            }
+            self.out.write_char('\'')?;
+        } else {
+            // Use double quotes with escaping as needed
+            self.out.write_char('"')?;
+            for ch in s.chars() {
+                match ch {
+                    '\\' => self.out.write_str("\\\\")?,
+                    '"' => self.out.write_str("\\\"")?,
+                    // YAML named escapes for common control characters
+                    '\0' => self.out.write_str("\\0")?,
+                    '\u{7}' => self.out.write_str("\\a")?,
+                    '\u{8}' => self.out.write_str("\\b")?,
+                    '\t' => self.out.write_str("\\t")?,
+                    '\n' => self.out.write_str("\\n")?,
+                    '\u{b}' => self.out.write_str("\\v")?,
+                    '\u{c}' => self.out.write_str("\\f")?,
+                    '\r' => self.out.write_str("\\r")?,
+                    '\u{1b}' => self.out.write_str("\\e")?,
+                    // Unicode BOM should use the standard \u escape rather than Rust's \u{...}
+                    '\u{FEFF}' => self.out.write_str("\\uFEFF")?,
+                    // YAML named escapes for Unicode separators
+                    '\u{0085}' => self.out.write_str("\\N")?,
+                    '\u{2028}' => self.out.write_str("\\L")?,
+                    '\u{2029}' => self.out.write_str("\\P")?,
+                    c if (c as u32) <= 0xFF
+                        && (c.is_control() || (0x7F..=0x9F).contains(&(c as u32))) =>
+                    {
+                        write!(self.out, "\\x{:02X}", c as u32)?
+                    }
+                    c if (c as u32) <= 0xFFFF
+                        && (c.is_control() || (0x7F..=0x9F).contains(&(c as u32))) =>
+                    {
+                        write!(self.out, "\\u{:04X}", c as u32)?
+                    }
+                    c => self.out.write_char(c)?,
                 }
-                c => self.out.write_char(c)?,
+            }
+            self.out.write_char('"')?;
+        }
+        Ok(())
+    }
+
+    /// Write a quoted string with line wrapping for long strings.
+    /// This matches Go's yaml.v3 behavior for strings that need quoting:
+    /// they use quoted style with continuation lines instead of folded block style.
+    ///
+    /// In YAML, multi-line quoted scalars fold newlines to spaces, so we can
+    /// safely insert newlines at word boundaries within the quoted content.
+    ///
+    /// `continuation_indent` is the number of spaces to indent continuation lines.
+    /// `first_line_offset` is extra characters already on the first line (e.g., key + `: `).
+    fn write_quoted_with_wrap(
+        &mut self,
+        s: &str,
+        continuation_indent: usize,
+        wrap_col: usize,
+        first_line_offset: usize,
+    ) -> Result<()> {
+        // Determine quote style (same logic as write_quoted)
+        let needs_escaping = s.chars().any(|c| {
+            c.is_control()
+                || matches!(
+                    c,
+                    '\n' | '\r'
+                        | '\t'
+                        | '\0'
+                        | '\u{7}'
+                        | '\u{8}'
+                        | '\u{b}'
+                        | '\u{c}'
+                        | '\u{1b}'
+                        | '\u{FEFF}'
+                        | '\u{0085}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                )
+        });
+
+        // Check if string looks like another YAML type (needs double quotes to disambiguate)
+        let looks_like_other_type = s.is_empty()
+            || s == "~"
+            || s.eq_ignore_ascii_case("null")
+            || s.eq_ignore_ascii_case("true")
+            || s.eq_ignore_ascii_case("false")
+            || s.eq_ignore_ascii_case("yes")
+            || s.eq_ignore_ascii_case("no")
+            || s.eq_ignore_ascii_case("on")
+            || s.eq_ignore_ascii_case("off")
+            || s.parse::<i64>().is_ok()
+            || s.parse::<f64>().is_ok()
+            || crate::ser_quoting::looks_like_date_or_timestamp(s);
+
+        // Use single quotes unless escaping needed or type-ambiguous
+        // Internal single quotes are escaped by doubling (' → '')
+        let use_single_quotes = !needs_escaping && !looks_like_other_type;
+
+        // Precompute indent string for continuation lines
+        let mut indent_buf = String::new();
+        for _ in 0..continuation_indent {
+            indent_buf.push(' ');
+        }
+        let indent_str = indent_buf.as_str();
+
+        // Split into words (NOT including the space delimiter)
+        // Go yaml.v2 breaks WITHOUT trailing space before the newline
+        let words: Vec<&str> = s.split(' ').collect();
+
+        if use_single_quotes {
+            self.out.write_char('\'')?;
+
+            // Go yaml.v3 tracks actual column position (including key prefix and indent).
+            // Go uses POST-check: after writing content, check if column > wrap_col.
+            // If so, break BEFORE the next word (omit the space, insert newline + indent).
+            let mut column = first_line_offset + 1; // +1 for the opening quote we just wrote
+
+            for (idx, word) in words.iter().enumerate() {
+                // For non-first words, check if we should break before this word
+                if idx > 0 {
+                    // Go's check: if column (after previous content) exceeds wrap_col, break
+                    if column > wrap_col {
+                        // Break before this word (no trailing space on previous line)
+                        self.newline()?;
+                        self.out.write_str(indent_str)?;
+                        self.at_line_start = false;
+                        column = continuation_indent;
+                    } else {
+                        // Add space before this word (separator from previous word)
+                        self.out.write_char(' ')?;
+                        column += 1;
+                    }
+                }
+
+                // Write the word (escape single quotes by doubling them)
+                for ch in word.chars() {
+                    if ch == '\'' {
+                        self.out.write_str("''")?;
+                        column += 2;
+                    } else {
+                        self.out.write_char(ch)?;
+                        column += 1;
+                    }
+                }
+            }
+
+            self.out.write_char('\'')?;
+        } else {
+            // Double-quoted style - need to escape content first, then split
+            // Use the original space-based splitting approach which handles
+            // consecutive spaces correctly with \ escaping at continuation start
+            let mut escaped = String::new();
+            for ch in s.chars() {
+                match ch {
+                    '\\' => escaped.push_str("\\\\"),
+                    '"' => escaped.push_str("\\\""),
+                    '\0' => escaped.push_str("\\0"),
+                    '\u{7}' => escaped.push_str("\\a"),
+                    '\u{8}' => escaped.push_str("\\b"),
+                    '\t' => escaped.push_str("\\t"),
+                    '\n' => escaped.push_str("\\n"),
+                    '\u{b}' => escaped.push_str("\\v"),
+                    '\u{c}' => escaped.push_str("\\f"),
+                    '\r' => escaped.push_str("\\r"),
+                    '\u{1b}' => escaped.push_str("\\e"),
+                    '\u{FEFF}' => escaped.push_str("\\uFEFF"),
+                    '\u{0085}' => escaped.push_str("\\N"),
+                    '\u{2028}' => escaped.push_str("\\L"),
+                    '\u{2029}' => escaped.push_str("\\P"),
+                    c if (c as u32) <= 0xFF
+                        && (c.is_control() || (0x7F..=0x9F).contains(&(c as u32))) =>
+                    {
+                        use std::fmt::Write;
+                        write!(escaped, "\\x{:02X}", c as u32).unwrap();
+                    }
+                    c if (c as u32) <= 0xFFFF
+                        && (c.is_control() || (0x7F..=0x9F).contains(&(c as u32))) =>
+                    {
+                        use std::fmt::Write;
+                        write!(escaped, "\\u{:04X}", c as u32).unwrap();
+                    }
+                    c => escaped.push(c),
+                }
+            }
+
+            let words: Vec<&str> = escaped.split(' ').collect();
+
+            self.out.write_char('"')?;
+
+            // Go yaml.v2 tracks actual column position (including key prefix and indent).
+            // We simulate this by tracking column position, not just content length.
+            // - First line: column starts at first_line_offset + 1 (key + `: ` + quote)
+            // - Continuation: column starts at continuation_indent (4 spaces + `\ ` if escaping)
+            let continuation_indent = 4usize;
+            let mut column = first_line_offset + 1; // +1 for the opening quote we just wrote
+            // Track if we're at the start of continuation content (after indent, before any non-space content)
+            // When true, spaces must be escaped as `\ ` to preserve them (YAML line folding would trim them)
+            let mut at_continuation_start = false;
+
+            // Track pending spaces (empty words) that we haven't written yet
+            let mut pending_spaces = 0usize;
+
+            for (idx, word) in words.iter().enumerate() {
+                if idx > 0 {
+                    if word.is_empty() {
+                        // Empty word = space in original content
+                        // Don't write immediately - accumulate and decide when we see the next word
+                        pending_spaces += 1;
+                        continue;
+                    }
+
+                    // Go yaml.v2 uses POST-check: write content, then at space positions
+                    // check if column > best_width. If so, break instead of writing space.
+                    //
+                    // We check if current column already exceeds limit (from previous word).
+                    // Go ONLY breaks when column > best_width, nothing else.
+                    let should_break = column > wrap_col;
+
+                    if should_break {
+                        // Break before this word (don't emit trailing spaces)
+                        self.newline()?;
+                        self.out.write_str(indent_str)?;
+                        self.at_line_start = false;
+                        column = continuation_indent; // Reset to continuation indent
+
+                        // If there were pending spaces, escape them on the new line
+                        if pending_spaces > 0 {
+                            self.out.write_str("\\ ")?;
+                            column += 2;
+                            for _ in 1..pending_spaces {
+                                self.out.write_char(' ')?;
+                                column += 1;
+                            }
+                        }
+                        pending_spaces = 0;
+                    } else {
+                        // Write the separator space and any pending spaces
+                        // Total spaces to write = 1 (separator) + pending_spaces
+                        // Only escape the first space if we're at a YAML continuation line start
+                        // (NOT just after \n escape sequences in the content)
+                        let total_spaces = 1 + pending_spaces;
+
+                        if at_continuation_start {
+                            // First space escaped
+                            self.out.write_str("\\ ")?;
+                            column += 2;
+                            at_continuation_start = false;
+                            // Write remaining spaces
+                            for _ in 1..total_spaces {
+                                self.out.write_char(' ')?;
+                                column += 1;
+                            }
+                        } else {
+                            // Normal case: write all spaces
+                            for _ in 0..total_spaces {
+                                self.out.write_char(' ')?;
+                                column += 1;
+                            }
+                        }
+                        pending_spaces = 0;
+                    }
+                }
+
+                self.out.write_str(word)?;
+                column += word.len();
+
+                // Non-empty word means we're no longer at continuation start
+                if !word.is_empty() {
+                    at_continuation_start = false;
+                }
+            }
+
+            self.out.write_char('"')?;
+        }
+
+        Ok(())
+    }
+
+    /// Write a plain scalar with line wrapping for long strings.
+    /// This matches Go's yaml.v2 behavior where plain scalars are wrapped
+    /// without converting to folded block style.
+    ///
+    /// In YAML, plain scalars can span multiple lines where newlines are folded to spaces.
+    /// `continuation_indent` is the number of spaces to indent continuation lines.
+    /// `first_line_offset` is extra characters already on the first line (e.g., key + `: `).
+    fn write_plain_with_wrap(
+        &mut self,
+        s: &str,
+        continuation_indent: usize,
+        wrap_col: usize,
+        first_line_offset: usize,
+    ) -> Result<()> {
+        // Precompute indent string for continuation lines
+        let mut indent_buf = String::new();
+        for _ in 0..continuation_indent {
+            indent_buf.push(' ');
+        }
+        let indent_str = indent_buf.as_str();
+
+        // Split into words (NOT including the space delimiter)
+        let words: Vec<&str> = s.split(' ').collect();
+
+        // Go yaml.v2 tracks actual column position (including key prefix and indent).
+        // continuation_indent is passed as a parameter.
+        let mut column = first_line_offset; // Start at key prefix position
+        let mut first_line = true;
+
+        for (idx, word) in words.iter().enumerate() {
+            // Add space before word (except first word on a line)
+            if column
+                > (if first_line {
+                    first_line_offset
+                } else {
+                    continuation_indent
+                })
+            {
+                self.out.write_char(' ')?;
+                column += 1;
+            }
+
+            // Write the word
+            self.out.write_str(word)?;
+            column += word.len();
+
+            // Check if we should break after this word (Go yaml.v2 behavior)
+            // Go checks column > best_width at space positions
+            let should_break = if idx + 1 < words.len() {
+                column > wrap_col
+            } else {
+                false
+            };
+
+            if should_break {
+                self.newline()?;
+                self.out.write_str(indent_str)?;
+                self.at_line_start = false;
+                column = continuation_indent;
+                first_line = false;
             }
         }
-        self.out.write_char('"')?;
+
         Ok(())
     }
 
     /// Like `write_plain_or_quoted`, but intended for VALUE position where ':' is allowed.
+    /// Uses stricter quoting in flow style (commas/brackets are structural) and more
+    /// permissive quoting in block style (matching Go's yaml.v3 behavior).
     #[inline]
     fn write_plain_or_quoted_value(&mut self, s: &str) -> Result<()> {
-        if is_plain_value_safe(s) {
+        // In block style, we can be more permissive (commas and brackets are allowed)
+        // In flow style, we need stricter quoting
+        let is_safe = if self.in_flow == 0 {
+            is_plain_block_value_safe(s)
+        } else {
+            is_plain_value_safe(s)
+        };
+
+        if is_safe {
             self.out.write_str(s)?;
             Ok(())
         } else {
-            // Force quoted style for problematic value tokens (commas/brackets, bool/num-like, etc.).
+            // Force quoted style for unsafe value tokens
             self.write_quoted(s)
         }
     }
@@ -861,7 +1303,22 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
         if self.at_line_start {
             self.write_indent(self.depth)?;
         }
-        write!(self.out, "{}", v)?;
+        // Use scientific notation for large integers when enabled
+        // This matches Go's yaml.v3 behavior (threshold >= 1M)
+        if self.use_scientific_notation && v.abs() >= 1_000_000 {
+            // Format as scientific notation to match Go's yaml.v3
+            // Go uses "+07" for positive exponents, Rust uses "7", so we format manually
+            let f = v as f64;
+            let exp = f.abs().log10().floor() as i32;
+            let mantissa = f / 10f64.powi(exp);
+            if exp >= 0 {
+                write!(self.out, "{}e+{:02}", mantissa, exp)?;
+            } else {
+                write!(self.out, "{}e{:03}", mantissa, exp)?;
+            }
+        } else {
+            write!(self.out, "{}", v)?;
+        }
         self.write_end_of_scalar()?;
         Ok(())
     }
@@ -892,7 +1349,18 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
         if self.at_line_start {
             self.write_indent(self.depth)?;
         }
-        write!(self.out, "{}", v)?;
+        // Use scientific notation for large integers when enabled
+        // This matches Go's yaml.v3 behavior (threshold ~10^7)
+        if self.use_scientific_notation && v >= 10_000_000 {
+            // Format as scientific notation to match Go's yaml.v3
+            // Go uses "+07" for positive exponents, Rust uses "7", so we format manually
+            let f = v as f64;
+            let exp = f.log10().floor() as i32;
+            let mantissa = f / 10f64.powi(exp);
+            write!(self.out, "{}e+{:02}", mantissa, exp)?;
+        } else {
+            write!(self.out, "{}", v)?;
+        }
         self.write_end_of_scalar()?;
         Ok(())
     }
@@ -925,7 +1393,8 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
             } else {
                 self.out.write_str("-.inf")?;
             }
-        } else {
+        } else if self.use_scientific_notation {
+            // Use ryu for fast formatting (may produce scientific notation)
             let mut buf = ryu::Buffer::new();
             let s = buf.format(v);
             if !s.contains('.') && !s.contains('e') && !s.contains('E') {
@@ -933,6 +1402,24 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
                 self.out.write_str(".0")?;
             } else {
                 self.out.write_str(s)?;
+            }
+        } else {
+            // Avoid scientific notation - use plain decimal format
+            // Check if it's a whole number (no fractional part)
+            if v.fract() == 0.0 && v.abs() < 1e16 {
+                // Write as integer-like format with .0 suffix
+                write!(self.out, "{:.0}.0", v)?;
+            } else {
+                // Write with enough precision to round-trip, avoiding scientific notation
+                // Use a reasonable precision that avoids trailing zeros
+                let formatted = format!("{:.15}", v);
+                let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
+                if trimmed.contains('.') {
+                    self.out.write_str(trimmed)?;
+                } else {
+                    self.out.write_str(trimmed)?;
+                    self.out.write_str(".0")?;
+                }
             }
         }
         self.write_end_of_scalar()?;
@@ -952,23 +1439,30 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
         // (per ser_quoting::is_plain_value_safe), unless the only reason it needs quoting
         // is the presence of newlines themselves. This ensures cases like "hey:\n" remain
         // quoted (because trimmed value ends with ':'), even when prefer_block_scalars=true.
-        if self.pending_str_style.is_none() && self.prefer_block_scalars && self.in_flow == 0 {
+        // Skip block scalar auto-selection if string contains tabs - Go yaml.v2 falls back
+        // to double-quoted style for strings with tabs to ensure proper escape sequences.
+        if self.pending_str_style.is_none()
+            && self.prefer_block_scalars
+            && self.in_flow == 0
+            && !v.contains('\t')
+            && !has_trailing_whitespace(v)
+        {
             use crate::ser_quoting::is_plain_value_safe;
 
             if v.contains('\n') {
-                // If removing newlines makes it plain-safe, then the only problem was newlines →
-                // allow literal block style. Otherwise, don't auto-select block style so that
-                // quoting logic handles it (e.g., values ending with ':').
-                let trimmed = v.trim_end_matches('\n');
-                let normalized = trimmed.replace('\n', " ");
-                if is_plain_value_safe(&normalized) {
-                    self.pending_str_style = Some(StrStyle::Literal);
-                    self.pending_str_from_auto = true;
-                }
+                // Use block scalar style for all multiline strings. Block scalars can contain
+                // ANY content (including YAML-like syntax like "- item" or "key: value")
+                // because the content is literal text, not parsed as YAML structure.
+                // This matches Go yaml.v3 behavior which uses block scalar for multiline strings
+                // that don't have trailing whitespace on lines.
+                self.pending_str_style = Some(StrStyle::Literal);
+                self.pending_str_from_auto = true;
             } else {
                 // Single-line string. If it needs quoting as a value, don't auto-fold.
+                // Also skip auto-fold when line_width is set - let the line_width wrapping
+                // logic handle long strings with plain scalar style instead.
                 let needs_quoting = !is_plain_value_safe(v);
-                if !needs_quoting {
+                if !needs_quoting && self.line_width.is_none() {
                     // Measure in characters, not bytes.
                     if v.len() > self.folded_wrap_col {
                         self.pending_str_style = Some(StrStyle::Folded);
@@ -982,11 +1476,14 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
             // Insert it now if pending.
             self.write_space_if_pending()?;
             // Determine base indentation for block scalar body.
-            // Prefer aligning under an enclosing sequence dash if present; otherwise under the parent mapping's base.
-            let base = if let Some(d) = self.after_dash_depth {
+            // Prefer current_map_depth if set (we're in a nested map context), then
+            // after_dash_depth (we're directly in a sequence context), then depth.
+            let base = if let Some(d) = self.current_map_depth {
+                d
+            } else if let Some(d) = self.after_dash_depth {
                 d
             } else {
-                self.current_map_depth.unwrap_or(self.depth)
+                self.depth
             };
             if self.at_line_start {
                 self.write_indent(base)?;
@@ -997,17 +1494,41 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
                     //  - 0 → "|-" (strip)
                     //  - 1 → "|" (clip)
                     //  - >=2 → "|+" (keep)
+                    // If block_scalar_chomp is set, use that override instead.
                     let content = v.trim_end_matches('\n');
                     let trailing_nl = v.len() - content.len();
-                    match trailing_nl {
-                        0 => self.out.write_str("|-")?,
-                        1 => self.out.write_str("|")?,
-                        _ => self.out.write_str("|+")?,
+
+                    // Check if we need an explicit indentation indicator.
+                    // YAML requires this when the first line of the content starts with
+                    // whitespace (space or tab) or if the content starts with an empty line.
+                    let first_line = content.split('\n').next().unwrap_or("");
+                    let needs_indent_indicator = first_line.is_empty()
+                        || first_line.starts_with(' ')
+                        || first_line.starts_with('\t');
+
+                    // Determine effective chomp indicator and trailing newlines to emit
+                    let (chomp_char, effective_trailing_nl) = match self.block_scalar_chomp {
+                        Some(ChompIndicator::Strip) => ("-", 0),
+                        Some(ChompIndicator::Clip) => ("", 1),
+                        Some(ChompIndicator::Keep) => ("+", trailing_nl.max(2)),
+                        None => match trailing_nl {
+                            0 => ("-", 0),
+                            1 => ("", 1),
+                            _ => ("+", trailing_nl),
+                        },
+                    };
+
+                    // Write block scalar header: | + optional indent indicator + chomp
+                    self.out.write_char('|')?;
+                    if needs_indent_indicator {
+                        // Use indent_step as the indentation width indicator
+                        write!(self.out, "{}", self.indent_step)?;
                     }
+                    self.out.write_str(chomp_char)?;
                     self.newline()?;
 
                     // Emit body lines. For non-empty content, write each line exactly once.
-                    // For keep chomping (>=2), append (trailing_nl - 1) visual empty lines.
+                    // For keep chomping (>=2), append (effective_trailing_nl - 1) visual empty lines.
                     // Special case: empty original content with at least one trailing newline
                     // should produce a single empty content line (tests expect this for "\n").
                     // Determine indentation base for the body relative to the header line base.
@@ -1020,12 +1541,14 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
                     let spaces = self.indent_step * body_base;
                     if spaces > 0 {
                         indent_buf.reserve(spaces);
-                        for _ in 0..spaces { indent_buf.push(' '); }
+                        for _ in 0..spaces {
+                            indent_buf.push(' ');
+                        }
                     }
                     let indent_str = indent_buf.as_str();
 
                     if content.is_empty() {
-                        if trailing_nl >= 1 {
+                        if effective_trailing_nl >= 1 {
                             self.out.write_str(indent_str)?;
                             self.at_line_start = false;
                             // write a single empty content line
@@ -1033,36 +1556,49 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
                         }
                     } else {
                         for line in content.split('\n') {
-                            self.out.write_str(indent_str)?;
-                            self.at_line_start = false;
-                            self.out.write_str(line)?;
-                            self.newline()?;
-                        }
-                        if trailing_nl >= 2 {
-                            for _ in 0..(trailing_nl - 1) {
+                            // Only write indentation for non-empty lines to avoid trailing whitespace
+                            if !line.is_empty() {
                                 self.out.write_str(indent_str)?;
                                 self.at_line_start = false;
+                                self.out.write_str(line)?;
+                            }
+                            self.newline()?;
+                        }
+                        if effective_trailing_nl >= 2 {
+                            for _ in 0..(effective_trailing_nl - 1) {
+                                // Trailing empty lines also don't get indentation
                                 self.newline()?;
                             }
                         }
                     }
                 }
                 StrStyle::Folded => {
-                    if self.pending_str_from_auto {
+                    // Determine chomp indicator for folded style.
+                    // If block_scalar_chomp is set, use that override.
+                    // Otherwise, use auto-detection for auto-selected folded style,
+                    // or plain '>' for explicit FoldStr/FoldString wrappers.
+                    let chomp_str = if let Some(chomp) = self.block_scalar_chomp {
+                        match chomp {
+                            ChompIndicator::Strip => ">-",
+                            ChompIndicator::Clip => ">",
+                            ChompIndicator::Keep => ">+",
+                        }
+                    } else if self.pending_str_from_auto {
                         // Auto-selected folded style: choose chomping based on trailing newlines
                         // to preserve exact content on round-trip.
                         let content = v.trim_end_matches('\n');
                         let trailing_nl = v.len() - content.len();
                         match trailing_nl {
-                            0 => self.out.write_str(">-")?,
-                            1 => self.out.write_str(">")?,
-                            _ => self.out.write_str(">+")?,
+                            0 => ">-",
+                            1 => ">",
+                            _ => ">+",
                         }
                     } else {
                         // Explicit FoldStr/FoldString wrappers historically used plain '>'
                         // regardless of trailing newline; keep that behavior for compatibility.
-                        self.out.write_str(">")?;
-                    }
+                        ">"
+                    };
+                    self.out.write_str(chomp_str)?;
                     self.newline()?;
                     // Same body indentation rule as literal: one level deeper than the header base.
                     let body_base = base + 1;
@@ -1073,16 +1609,223 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
             self.pending_str_from_auto = false;
             return Ok(());
         }
+
+        // Auto-detect block scalars for multi-line strings when prefer_block_scalars is enabled
+        // and we're not inside a flow context (flow style doesn't support block scalars).
+        // Skip if string contains tabs - Go yaml.v2 falls back to double-quoted for tabs.
+        // Skip if string has trailing whitespace on lines - Go yaml.v3 uses double-quoted for those.
+        if self.prefer_block_scalars
+            && self.in_flow == 0
+            && v.contains('\n')
+            && !v.contains('\t')
+            && !has_trailing_whitespace(v)
+        {
+            self.write_space_if_pending()?;
+            // Prefer current_map_depth if set (we're in a nested map context), then
+            // after_dash_depth (we're directly in a sequence context), then depth.
+            let base = if let Some(d) = self.current_map_depth {
+                d
+            } else if let Some(d) = self.after_dash_depth {
+                d
+            } else {
+                self.depth
+            };
+            if self.at_line_start {
+                self.write_indent(base)?;
+            }
+
+            // Check if we need an explicit indentation indicator.
+            // YAML requires this when the first line of the content starts with
+            // whitespace (space or tab) or if the content starts with an empty line.
+            let content_trimmed = v.trim_end_matches('\n');
+            let first_line = content_trimmed.split('\n').next().unwrap_or("");
+            let needs_indent_indicator = first_line.is_empty()
+                || first_line.starts_with(' ')
+                || first_line.starts_with('\t');
+
+            // Determine chomp indicator: use override if set, otherwise auto-detect
+            let chomp_char = if let Some(chomp) = self.block_scalar_chomp {
+                match chomp {
+                    ChompIndicator::Strip => "-",
+                    ChompIndicator::Clip => "",
+                    ChompIndicator::Keep => "+",
+                }
+            } else {
+                // Use strip indicator (-) if string doesn't end with newline,
+                // otherwise use clip (no indicator) which preserves one trailing newline
+                if v.ends_with('\n') { "" } else { "-" }
+            };
+
+            // Write block scalar header: | + optional indent indicator + chomp
+            self.out.write_char('|')?;
+            if needs_indent_indicator {
+                write!(self.out, "{}", self.indent_step)?;
+            }
+            self.out.write_str(chomp_char)?;
+            self.newline()?;
+
+            // Literal block body indents one level deeper than the base indentation
+            // Use current_map_depth + 1 when available to match Go's yaml.v3 behavior
+            let body_depth = self
+                .current_map_depth
+                .map(|d| d + 1)
+                .unwrap_or(self.depth + 1);
+
+            // For strip chomp, emit content without trailing newlines
+            // For clip chomp, emit content (YAML block scalar adds one trailing newline implicitly)
+            // For keep chomp, emit all trailing newlines as extra blank lines
+            let content = v.trim_end_matches('\n');
+            let trailing_nl = v.len() - content.len();
+
+            // Determine effective trailing newline count based on chomp mode
+            let effective_trailing_nl = match self.block_scalar_chomp {
+                Some(ChompIndicator::Strip) => 0,
+                Some(ChompIndicator::Keep) => trailing_nl.max(2),
+                Some(ChompIndicator::Clip) | None => {
+                    // Clip: YAML implicitly adds one trailing newline
+                    // If original had trailing newline(s), we emit the lines without them
+                    // and YAML adds back exactly one
+                    if trailing_nl >= 1 { 1 } else { 0 }
+                }
+            };
+
+            // Emit content lines
+            for line in content.split('\n') {
+                // Empty lines should have no indentation (just the newline)
+                if !line.is_empty() {
+                    self.write_indent(body_depth)?;
+                }
+                self.out.write_str(line)?;
+                self.newline()?;
+            }
+
+            // For keep chomp with multiple trailing newlines, emit extra blank lines
+            if effective_trailing_nl >= 2 {
+                for _ in 0..(effective_trailing_nl - 1) {
+                    self.newline()?;
+                }
+            }
+
+            return Ok(());
+        }
+
+        // Automatic line wrapping for long strings when line_width is set
+        // This matches Go's yaml.v3 behavior with encoder.SetWidth()
+        if let Some(max_width) = self.line_width {
+            // Only wrap in block context (not in flow style)
+            // Wrap strings that either:
+            // 1. Don't contain newlines (single-line strings)
+            // 2. Contain tabs (forces quoted style - can't use block scalars)
+            // 3. Have trailing whitespace on lines (Go yaml.v3 uses double-quoted)
+            // 4. Block scalars are disabled (prefer_block_scalars: false)
+            // Strings with newlines but no tabs/trailing-ws AND block scalars enabled
+            // should use block scalars (handled above).
+            let needs_quoted_wrap = !v.contains('\n')
+                || v.contains('\t')
+                || has_trailing_whitespace(v)
+                || !self.prefer_block_scalars;
+            if self.in_flow == 0 && needs_quoted_wrap {
+                // Calculate continuation indent based on context:
+                // - In a map value context: continuation aligns past the key position
+                // - After sequence dash (but not in nested map): continuation aligns with content after `- `
+                //
+                // For YAML to correctly parse multi-line plain scalars, continuation
+                // lines must be indented more than the key/indicator position.
+                //
+                // Prioritize current_map_depth when set (we're in a map value context),
+                // even if after_dash_depth is also set (nested map inside sequence item).
+                let continuation_indent = if let Some(map_depth) = self.current_map_depth {
+                    // In map value context, indent one level deeper than the key
+                    (map_depth + 1) * self.indent_step
+                } else if let Some(d) = self.after_dash_depth {
+                    // After `- `, continuation aligns with content start (column after `- `)
+                    d * self.indent_step + 2
+                } else {
+                    // Fallback: indent one level deeper than current depth
+                    (self.depth + 1) * self.indent_step
+                };
+
+                // Go yaml.v3 uses line_width for the content portion directly.
+                // The indent is separate - so line_width=80 means 80 chars of content,
+                // regardless of how deep the nesting is.
+                let effective_width = max_width;
+
+                // First line offset accounts for the key prefix on the first line.
+                // Go yaml.v2 tracks actual column including: indent + key + `: ` + quote.
+                // Use actual key length when available for accuracy.
+                let first_line_offset = if let Some(map_depth) = self.current_map_depth {
+                    // Map value: indent + key + `: ` (2)
+                    let indent = map_depth * self.indent_step;
+                    // Use actual key length, or estimate 10 if not available
+                    let key_len = if self.last_key_len > 0 {
+                        self.last_key_len
+                    } else {
+                        10
+                    };
+                    indent + key_len + 2
+                } else if let Some(dash_depth) = self.after_dash_depth {
+                    // Sequence item: indent + `- ` (2)
+                    let indent = dash_depth * self.indent_step;
+                    indent + 2
+                } else {
+                    0
+                };
+
+                // Wrap if full line (including indent + key prefix + string) exceeds width
+                // Go's yaml.v3 includes the key prefix in the line length calculation
+                let total_line_length = first_line_offset + v.chars().count();
+                if total_line_length > effective_width && effective_width > 0 {
+                    self.write_space_if_pending()?;
+                    // Use same priority as continuation_indent: current_map_depth > after_dash_depth > depth
+                    let base = if let Some(map_depth) = self.current_map_depth {
+                        map_depth
+                    } else if let Some(d) = self.after_dash_depth {
+                        d
+                    } else {
+                        self.depth
+                    };
+                    if self.at_line_start {
+                        self.write_indent(base)?;
+                    }
+
+                    // Check if the string needs quoting (e.g., starts with '-', contains '"')
+                    // If so, use quoted style with wrapping instead of plain style.
+                    // This matches Go's yaml.v3 behavior.
+                    if !is_plain_block_value_safe(v) {
+                        self.write_quoted_with_wrap(
+                            v,
+                            continuation_indent,
+                            effective_width,
+                            first_line_offset,
+                        )?;
+                        self.write_end_of_scalar()?;
+                        return Ok(());
+                    }
+
+                    // Plain-safe strings: use plain scalar wrapping (no folded block style)
+                    // This matches Go's yaml.v3 behavior
+                    self.write_plain_with_wrap(
+                        v,
+                        continuation_indent,
+                        effective_width,
+                        first_line_offset,
+                    )?;
+                    self.write_end_of_scalar()?;
+                    return Ok(());
+                }
+            }
+        }
+
         self.write_space_if_pending()?;
         self.write_scalar_prefix_if_anchor()?;
         if self.at_line_start {
             self.write_indent(self.depth)?;
         }
         // Special-case: prefer single-quoted style for select 1-char punctuation to
-        // match expected YAML output in tests ('.', '#', '-').
+        // match expected YAML output and Go yaml.v3 behavior ('.', '#', '-', '*').
         if v.len() == 1 {
             if let Some(ch) = v.chars().next() {
-                if ch == '.' || ch == '#' || ch == '-' {
+                if ch == '.' || ch == '#' || ch == '-' || ch == '*' {
                     self.out.write_char('\'')?;
                     self.out.write_char(ch)?;
                     self.out.write_char('\'')?;
@@ -1272,6 +2015,7 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
                 depth: depth_next,
                 flow: true,
                 first: true,
+                deferred_newline: false,
             })
         } else {
             // Block sequence. Decide indentation based on whether this is after a map key or after a list dash.
@@ -1289,15 +2033,25 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
             // If we are a mapping value (space after colon was pending), we will handle
             // the newline later in SeqSer::serialize_element to keep empty sequences inline.
             self.write_anchor_for_complex_node()?;
+            // Track if we need to defer the newline for potential empty sequences
+            let mut deferred_newline = false;
             if inline_first {
                 // Keep staged inline (pending_inline_map) so the child can inline its first dash.
                 // Ensure we stay mid-line so the child can emit its first dash inline.
                 self.at_line_start = false;
             } else if was_inline_value {
-                // Mid-line start. If we are here due to a map value (after ':'), defer the newline
-                // decision until the first element is emitted so that empty sequences can stay inline
-                // as `key: []`. If we are here due to a list dash, keep inline.
-                // Intentionally do not clear `pending_space_after_colon` and do not newline here.
+                // Mid-line start. If we are here due to a map value (after ':'), move to next line.
+                // If we are here due to a list dash, keep inline.
+                self.pending_space_after_colon = false;
+                if !self.at_line_start {
+                    // If empty_array_as_brackets is enabled, defer the newline until we know
+                    // if the array has entries. Empty arrays should emit [] on the same line.
+                    if self.empty_array_as_brackets {
+                        deferred_newline = true;
+                    } else {
+                        self.newline()?;
+                    }
+                }
             }
             // Indentation policy mirrors serialize_map:
             // - After a list dash inline_first: base is dash depth; indent one level deeper.
@@ -1311,11 +2065,22 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
             } else {
                 self.depth
             };
-            // For sequences used as a mapping value, indent them one level deeper so the dash is
-            // nested under the parent key (consistent with serde_yaml's formatting). Keep block
-            // sequences inline only when they immediately follow another dash.
-            let depth_next = if inline_first || was_inline_value {
+            // Determine the depth for this sequence:
+            // - inline_first (nested sequence like `- - map:`): always increment depth by 1,
+            //   so subsequent items of the inner sequence are properly indented.
+            // - was_inline_value (array after map key like `key: [...]`): with indent_array=0,
+            //   keep at same depth; otherwise increment.
+            // - Top-level: use base depth.
+            let depth_next = if inline_first {
+                // Nested sequences always need one more level of indentation
                 base + 1
+            } else if was_inline_value {
+                // Array values respect indent_array setting
+                if self.indent_array == Some(0) {
+                    base
+                } else {
+                    base + 1
+                }
             } else {
                 base
             };
@@ -1326,6 +2091,7 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
                 depth: depth_next,
                 flow: false,
                 first: true,
+                deferred_newline,
             })
         }
     }
@@ -1389,27 +2155,31 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
                 flow: true,
                 first: true,
                 last_key_complex: false,
-                align_after_dash: false,
-                inline_value_start: false,
+                deferred_newline: false,
             })
         } else {
             let inline_first = self.pending_inline_map;
             // We only consider "value position" when immediately after a mapping colon.
             let was_inline_value = self.pending_space_after_colon;
             self.write_anchor_for_complex_node()?;
+            // Track if we need to defer the newline for potential empty maps
+            let mut deferred_newline = false;
             if inline_first {
                 // Suppress newline after a list dash for inline map first key.
                 self.pending_inline_map = false;
                 // Mark that this sequence element is a mapping printed inline after a dash.
                 self.inline_map_after_dash = true;
-            } else if self.pending_space_after_colon {
-                // Map used as a value after "key: ". If emitting braces for empty maps,
-                // keep this mapping on the same line so that an empty map renders as "{}".
-                if !self.empty_as_braces {
-                    // Legacy behavior: move the mapping body to the next line.
-                    // If an anchor was emitted, we are already at the start of a new line.
-                    self.pending_space_after_colon = false;
-                    if !self.at_line_start {
+            } else if was_inline_value {
+                // Map used as a value after "key: ". If an anchor was emitted, we are already at
+                // the start of a new line due to write_anchor_for_complex_node() -> newline().
+                // Only add a newline if we are not already at line start (i.e., no anchor emitted).
+                self.pending_space_after_colon = false;
+                if !self.at_line_start {
+                    // If empty_map_as_braces is enabled, defer the newline until we know
+                    // if the map has entries. Empty maps should emit {} on the same line.
+                    if self.empty_map_as_braces {
+                        deferred_newline = true;
+                    } else {
                         self.newline()?;
                     }
                 }
@@ -1427,21 +2197,47 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
             } else {
                 self.depth
             };
-            let depth_next = if inline_first || was_inline_value {
+            let depth_next = if inline_first {
+                // When a map is inline after a dash, subsequent fields should align with the first field.
+                // For nested sequences like `- - map:`, the first field position is:
+                //   array_step * outer_depth + 2 * inline_dash_count
+                // where outer_depth is the outermost sequence's depth.
+                // Since nested sequences increment depth by 1 for each level, we need to
+                // subtract (inline_dash_count - 1) from base to get the outer depth.
+                let array_step = match self.indent_array {
+                    Some(0) => self.indent_step, // When indent_array is 0, use indent_step for base
+                    Some(n) => n,
+                    None => self.indent_step,
+                };
+                // Account for all inline dashes (e.g., "- - - map:" has 3 dashes = 6 chars)
+                let dash_chars = 2 * self.inline_dash_count;
+                // Adjust base to get the outermost sequence's depth
+                let outer_depth = base.saturating_sub(self.inline_dash_count.saturating_sub(1));
+                let target_spaces = array_step * outer_depth + dash_chars;
+                // Calculate depth and offset to achieve target_spaces
+                let depth = target_spaces / self.indent_step;
+                let offset = target_spaces % self.indent_step;
+                // Clear any previous offset first
+                self.indent_offset = 0;
+                // Only set offset for immediate inline map fields after dash
+                if offset > 0 {
+                    self.indent_offset = offset;
+                }
+                // Reset inline dash count after consuming it
+                self.inline_dash_count = 0;
+                depth
+            } else if was_inline_value {
                 base + 1
             } else {
                 base
             };
-            let inline_value_start_flag = was_inline_value && self.empty_as_braces &&
-                !inline_first;
             Ok(MapSer {
                 ser: self,
                 depth: depth_next,
                 flow: false,
                 first: true,
                 last_key_complex: false,
-                align_after_dash: inline_first,
-                inline_value_start: inline_value_start_flag,
+                deferred_newline,
             })
         }
     }
@@ -1516,6 +2312,8 @@ pub struct SeqSer<'a, 'b, W: Write> {
     flow: bool,
     /// Whether the next element is the first (comma handling in flow style).
     first: bool,
+    /// Whether we deferred writing a newline for empty sequence detection (when empty_array_as_brackets is true).
+    deferred_newline: bool,
 }
 
 impl<'a, 'b, W: Write> SerializeTuple for SeqSer<'a, 'b, W> {
@@ -1536,6 +2334,11 @@ impl<'a, 'b, W: Write> SerializeSeq for SeqSer<'a, 'b, W> {
     type Error = Error;
 
     fn serialize_element<T: ?Sized + Serialize>(&mut self, v: &T) -> Result<()> {
+        // If we deferred a newline for empty sequence detection, write it now since the sequence isn't empty
+        if self.deferred_newline {
+            self.ser.newline()?;
+            self.deferred_newline = false;
+        }
         if self.flow {
             if !self.first {
                 self.ser.out.write_str(", ")?;
@@ -1558,8 +2361,12 @@ impl<'a, 'b, W: Write> SerializeSeq for SeqSer<'a, 'b, W> {
                 // Inline the first element of this nested sequence right after the outer dash
                 // (either we are already mid-line, or the parent staged inline via pending_inline_map).
                 // Do not write indentation here.
+                // Increment inline dash count to track consecutive inline dashes (e.g., "- - - map:").
+                self.ser.inline_dash_count += 1;
             } else {
-                self.ser.write_indent(self.depth)?;
+                self.ser.write_indent_seq(self.depth)?;
+                // Reset inline dash count - this dash starts a new line.
+                self.ser.inline_dash_count = 1;
             }
             self.ser.out.write_str("- ")?;
             self.ser.at_line_start = false;
@@ -1585,21 +2392,22 @@ impl<'a, 'b, W: Write> SerializeSeq for SeqSer<'a, 'b, W> {
                 me.ser.newline()?;
             }
         } else if self.first {
-            // Empty block-style sequence.
-            if self.ser.empty_as_braces {
-                // If we were pending a space after a colon (map value position), write it now.
-                if self.ser.pending_space_after_colon {
-                    self.ser.out.write_str(" ")?;
-                    self.ser.pending_space_after_colon = false;
+            // Empty block-style sequence: emit [] when option is enabled, otherwise just newline
+            if self.ser.empty_array_as_brackets {
+                // If we deferred a newline (value position after "key:"), we're still on the same line
+                // So we can emit " []" directly after the colon
+                if self.deferred_newline {
+                    // Write space after the pending colon, then []
+                    self.ser.out.write_str(" []")?;
+                    self.ser.newline()?;
+                } else {
+                    // Top-level or other position: emit [] on its own line
+                    self.ser.write_space_if_pending()?;
+                    self.ser.out.write_str("[]")?;
+                    self.ser.newline()?;
                 }
-                // If at line start, indent appropriately.
-                if self.ser.at_line_start {
-                    self.ser.write_indent(self.depth)?;
-                }
-                self.ser.out.write_str("[]")?;
-                self.ser.newline()?;
             } else {
-                // Preserve legacy behavior: just emit a newline (empty body).
+                // Original behavior: empty sequence ends with a newline
                 self.ser.newline()?;
             }
         }
@@ -1716,7 +2524,7 @@ impl<'a, 'b, W: Write> SerializeTupleStruct for TupleSer<'a, 'b, W> {
                         self.ser.newline()?;
                     }
                 }
-                self.ser.write_indent(self.ser.depth + 1)?;
+                self.ser.write_indent_seq(self.ser.depth + 1)?;
                 self.ser.out.write_str("- ")?;
                 self.ser.at_line_start = false;
                 value.serialize(&mut *self.ser)?;
@@ -1847,7 +2655,7 @@ impl<'a, 'b, W: Write> SerializeTupleVariant for TupleVariantSer<'a, 'b, W> {
     type Error = Error;
 
     fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
-        self.ser.write_indent(self.depth)?;
+        self.ser.write_indent_seq(self.depth)?;
         self.ser.out.write_str("- ")?;
         self.ser.at_line_start = false;
         value.serialize(&mut *self.ser)
@@ -1876,12 +2684,8 @@ pub struct MapSer<'a, 'b, W: Write> {
     first: bool,
     /// Whether the most recently serialized key was a complex (non-scalar) node.
     last_key_complex: bool,
-    /// Align continuation lines under an inline-after-dash first key by adding 2 spaces.
-    align_after_dash: bool,
-    /// If true, this mapping began in a value position and stayed inline (after `key:`)
-    /// so that an empty map can be serialized as `{}` right there. When the first key arrives,
-    /// we must break the line and indent appropriately.
-    inline_value_start: bool,
+    /// Whether we deferred writing a newline for empty map detection (when empty_map_as_braces is true).
+    deferred_newline: bool,
 }
 
 impl<'a, 'b, W: Write> SerializeMap for MapSer<'a, 'b, W> {
@@ -1889,6 +2693,11 @@ impl<'a, 'b, W: Write> SerializeMap for MapSer<'a, 'b, W> {
     type Error = Error;
 
     fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<()> {
+        // If we deferred a newline for empty map detection, write it now since the map isn't empty
+        if self.deferred_newline {
+            self.ser.newline()?;
+            self.deferred_newline = false;
+        }
         if self.flow {
             if !self.first {
                 self.ser.out.write_str(", ")?;
@@ -1899,35 +2708,27 @@ impl<'a, 'b, W: Write> SerializeMap for MapSer<'a, 'b, W> {
             self.ser.at_line_start = false;
             self.last_key_complex = false;
         } else {
+            // If we deferred a newline for empty map detection, write it now since the map isn't empty
+            if self.deferred_newline {
+                self.ser.newline()?;
+                self.deferred_newline = false;
+            }
             match scalar_key_to_string(key) {
                 Ok(text) => {
-                    // If this mapping started inline as a value (after "key:"), but now we
-                    // are about to emit the first entry, move to the next line before the key.
-                    if self.inline_value_start {
-                        // Cancel a pending space after ':' and break the line.
-                        if self.ser.pending_space_after_colon {
-                            self.ser.pending_space_after_colon = false;
-                        }
-                        if !self.ser.at_line_start {
-                            self.ser.newline()?;
-                        }
-                        self.inline_value_start = false;
-                    } else if !self.ser.at_line_start {
+                    if !self.ser.at_line_start {
                         self.ser.write_space_if_pending()?;
                     }
-                    // Indent continuation lines. If this map started inline after a dash,
-                    // align under the first key by adding two spaces instead of a full indent step.
-                    if self.align_after_dash && self.ser.at_line_start {
-                        let base = self.depth.saturating_sub(1);
-                        for _ in 0..self.ser.indent_step * base {
-                            self.ser.out.write_char(' ')?;
-                        }
-                        self.ser.out.write_str("  ")?; // width of "- "
-                        self.ser.at_line_start = false;
+                    self.ser.write_indent(self.depth)?;
+                    // Quote numeric string keys if option is enabled
+                    if self.ser.quote_numeric_strings && looks_like_number(&text) {
+                        self.ser.out.write_str("\"")?;
+                        self.ser.out.write_str(&text)?;
+                        self.ser.out.write_str("\"")?;
                     } else {
-                        self.ser.write_indent(self.depth)?;
+                        self.ser.out.write_str(&text)?;
                     }
-                    self.ser.out.write_str(&text)?;
+                    // Store key length for accurate line width calculation in values
+                    self.ser.last_key_len = text.len();
                     // Defer the decision to put a space vs. newline until we see the value type.
                     self.ser.out.write_str(":")?;
                     self.ser.pending_space_after_colon = true;
@@ -1935,16 +2736,7 @@ impl<'a, 'b, W: Write> SerializeMap for MapSer<'a, 'b, W> {
                     self.last_key_complex = false;
                 }
                 Err(Error::Unexpected { msg }) if msg == "non-scalar key" => {
-                    // Same handling for the first key when starting inline: break the line first.
-                    if self.inline_value_start {
-                        if self.ser.pending_space_after_colon {
-                            self.ser.pending_space_after_colon = false;
-                        }
-                        if !self.ser.at_line_start {
-                            self.ser.newline()?;
-                        }
-                        self.inline_value_start = false;
-                    } else if !self.ser.at_line_start {
+                    if !self.ser.at_line_start {
                         self.ser.write_space_if_pending()?;
                     }
                     self.ser.write_anchor_for_complex_node()?;
@@ -1986,16 +2778,7 @@ impl<'a, 'b, W: Write> SerializeMap for MapSer<'a, 'b, W> {
             let saved_pending_inline_map = self.ser.pending_inline_map;
             let saved_depth = self.ser.depth;
             if self.last_key_complex {
-                if self.align_after_dash && self.ser.at_line_start {
-                    let base = self.depth.saturating_sub(1);
-                    for _ in 0..self.ser.indent_step * base {
-                        self.ser.out.write_char(' ')?;
-                    }
-                    self.ser.out.write_str("  ")?;
-                    self.ser.at_line_start = false;
-                } else {
-                    self.ser.write_indent(self.depth)?;
-                }
+                self.ser.write_indent(self.depth)?;
                 self.ser.out.write_str(":")?;
                 self.ser.pending_space_after_colon = true;
                 self.ser.pending_inline_map = true;
@@ -2003,8 +2786,13 @@ impl<'a, 'b, W: Write> SerializeMap for MapSer<'a, 'b, W> {
                 self.ser.depth = self.depth;
             }
             let prev_map_depth = self.ser.current_map_depth.replace(self.depth);
+            // Save and clear indent_offset for nested structures
+            let prev_offset = self.ser.indent_offset;
+            self.ser.indent_offset = 0;
             let result = value.serialize(&mut *self.ser);
             self.ser.current_map_depth = prev_map_depth;
+            // Restore offset only if we're still at the same map level
+            self.ser.indent_offset = prev_offset;
             // Always restore the parent's pending_inline_map to avoid leaking inline hints
             // across sibling values (e.g., after finishing a sequence value like `groups`).
             self.ser.pending_inline_map = saved_pending_inline_map;
@@ -2025,34 +2813,28 @@ impl<'a, 'b, W: Write> SerializeMap for MapSer<'a, 'b, W> {
                 self.ser.newline()?;
             }
         } else if self.first {
-            // Empty block-style map.
-            if self.ser.empty_as_braces {
-                // If we were pending a space after a colon (map value position), write it now.
-                if self.ser.pending_space_after_colon {
-                    self.ser.out.write_str(" ")?;
+            // Empty block map: emit {} when option is enabled, otherwise just newline
+            if self.ser.empty_map_as_braces {
+                // If we deferred a newline (value position after "key:"), we're still on the same line
+                // So we can emit " {}" directly after the colon
+                if self.deferred_newline {
+                    // Write space after the pending colon, then {}
+                    self.ser.out.write_str(" {}")?;
                     self.ser.pending_space_after_colon = false;
+                    self.ser.newline()?;
+                } else {
+                    // Top-level or other position: emit {} on its own line
+                    self.ser.write_space_if_pending()?;
+                    self.ser.out.write_str("{}")?;
+                    self.ser.newline()?;
                 }
-                // If at line start, indent appropriately.
-                if self.ser.at_line_start {
-                    // If we are aligning after a dash, mimic the indentation logic used for keys.
-                    if self.align_after_dash {
-                        let base = self.depth.saturating_sub(1);
-                        for _ in 0..self.ser.indent_step * base {
-                            self.ser.out.write_char(' ')?;
-                        }
-                        self.ser.out.write_str("  ")?; // width of "- "
-                        self.ser.at_line_start = false;
-                    } else {
-                        self.ser.write_indent(self.depth)?;
-                    }
-                }
-                self.ser.out.write_str("{}")?;
-                self.ser.newline()?;
             } else {
-                // Preserve legacy behavior: just emit a newline (empty body).
+                // Original behavior: empty map ends with a newline
                 self.ser.newline()?;
             }
         }
+        // Clear indent offset when exiting map
+        self.ser.indent_offset = 0;
         Ok(())
     }
 }
@@ -2572,6 +3354,24 @@ impl StrCapture {
     fn finish(self) -> Result<String> {
         self.s.ok_or_else(|| Error::unexpected("missing string"))
     }
+}
+
+// ------------------------------------------------------------
+// String helpers
+// ------------------------------------------------------------
+
+/// Check if any line in the string has trailing whitespace (space or tab).
+/// Go's yaml.v3 falls back to double-quoted strings for values with trailing
+/// whitespace on lines, so we should do the same for compatibility.
+fn has_trailing_whitespace(s: &str) -> bool {
+    s.lines()
+        .any(|line| line.ends_with(' ') || line.ends_with('\t'))
+}
+
+/// Check if a string looks like a number (all digits, possibly with leading zeros).
+/// Used to determine if numeric string keys like "12345" should be quoted.
+fn looks_like_number(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
 }
 
 // ------------------------------------------------------------

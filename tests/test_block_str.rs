@@ -1,9 +1,10 @@
 use serde::Serialize;
 
-use serde_saphyr::{to_string, FoldStr, FoldString, LitStr, LitString, RcAnchor};
+use serde_saphyr::{FoldStr, FoldString, LitStr, LitString, RcAnchor, to_string};
 
 #[test]
 fn litstr_top_level() {
+    // String doesn't end with \n, so use strip indicator (|-)
     let out = to_string(&LitStr("line 1\nline 2")).unwrap();
     assert_eq!(out, "|-\n  line 1\n  line 2\n");
 }
@@ -13,11 +14,13 @@ fn litstr_no_trailing_newline() {
     #[derive(Serialize)]
     struct Doc<'a> {
         note: LitStr<'a>,
-        other: usize
+        other: usize,
     }
     let d = Doc {
-        note: LitStr("a\nb"), other: 0
+        note: LitStr("a\nb"),
+        other: 0,
     };
+    // String doesn't end with \n, so use strip indicator (|-)
     let out = to_string(&d).unwrap();
     assert_eq!(out, "note: |-\n  a\n  b\nother: 0\n");
 }
@@ -27,9 +30,12 @@ fn litstr_trailing_newline() {
     #[derive(Serialize)]
     struct Doc<'a> {
         note: LitStr<'a>,
-        other: usize
+        other: usize,
     }
-    let d = Doc { note: LitStr("hello\nworld\n"), other: 0 };
+    let d = Doc {
+        note: LitStr("hello\nworld\n"),
+        other: 0,
+    };
     let out = to_string(&d).unwrap();
     assert_eq!(out, "note: |\n  hello\n  world\nother: 0\n");
 }
@@ -150,6 +156,7 @@ fn litstr_inner_blank_line_and_trailing_newline() {
 
 #[test]
 fn litstr_in_block_sequence_item() {
+    // String doesn't end with \n, so use strip indicator (|-)
     let v = vec![LitStr("alpha\nbeta")];
     let out = to_string(&v).unwrap();
     assert_eq!(out, "- |-\n  alpha\n  beta\n");
@@ -183,6 +190,7 @@ fn foldstr_in_block_sequence_item() {
 
 #[test]
 fn lit_string_top_level() {
+    // String doesn't end with \n, so use strip indicator (|-)
     let out = to_string(&LitString("line 1\nline 2".to_string())).unwrap();
     assert_eq!(out, "|-\n  line 1\n  line 2\n");
 }
@@ -196,12 +204,14 @@ fn lit_string_as_map_value() {
     let d = Doc {
         note: LitString("a\nb".to_string()),
     };
+    // String doesn't end with \n, so use strip indicator (|-)
     let out = to_string(&d).unwrap();
     assert_eq!(out, "note: |-\n  a\n  b\n");
 }
 
 #[test]
 fn lit_string_in_block_sequence_item() {
+    // String doesn't end with \n, so use strip indicator (|-)
     let v = vec![LitString("alpha\nbeta".to_string())];
     let out = to_string(&v).unwrap();
     assert_eq!(out, "- |-\n  alpha\n  beta\n");
