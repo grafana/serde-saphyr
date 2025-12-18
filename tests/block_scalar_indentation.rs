@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_saphyr::SerializerOptions;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Address {
@@ -23,7 +24,13 @@ fn nested_mapping_block_scalar_body_is_correctly_indented() -> anyhow::Result<()
         },
     };
 
-    let yaml = serde_saphyr::to_string(&w)?;
+    // Use prefer_block_scalars to enable block scalar style for multiline strings
+    let opts = SerializerOptions {
+        prefer_block_scalars: true,
+        ..Default::default()
+    };
+    let mut yaml = String::new();
+    serde_saphyr::to_fmt_writer_with_options(&mut yaml, &w, opts)?;
 
     // Expect the following shape (indentation significant):
     // address:

@@ -22,6 +22,8 @@ pub(crate) enum SfTag {
     // Custom angle tags supported by angles_hook
     Degrees,
     Radians,
+    /// YAML merge tag (!!merge) - used with merge key (<<)
+    Merge,
     Other,
 }
 
@@ -83,6 +85,11 @@ static TAG_LOOKUP_MAP: LazyLock<BTreeMap<&'static str, SfTag>> = LazyLock::new(|
         ("!radians", SfTag::Radians),
         ("tag:yaml.org,2002:radians", SfTag::Radians),
         ("tag:yaml.org,2002:!radians", SfTag::Radians),
+        // merge (used with << merge key)
+        ("!!merge", SfTag::Merge),
+        ("!merge", SfTag::Merge),
+        ("tag:yaml.org,2002:merge", SfTag::Merge),
+        ("tag:yaml.org,2002:!merge", SfTag::Merge),
         // non-specific ("!", "!!"), should force into string.
         ("!", SfTag::NonSpecific),
         ("!!", SfTag::NonSpecific),
@@ -116,6 +123,7 @@ impl SfTag {
             | SfTag::TimeStamp
             | SfTag::Degrees
             | SfTag::Radians
+            | SfTag::Merge
             | SfTag::NonSpecific => false,
         }
     }

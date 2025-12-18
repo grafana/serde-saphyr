@@ -11,7 +11,7 @@ categories = ["encoding", "parser-implementations", "config"]
 keywords = ["yaml", "serde", "serialization", "config", "ros"]
 
 [dependencies]
-saphyr-parser = "0.0.6"
+saphyr-parser = { git = "https://github.com/grafana/saphyr", branch = "master" }
 serde = { version = "1", features = ["derive"] }
 # Our all tests are fine with alpha.
 smallvec = "2.0.0-alpha.12"
