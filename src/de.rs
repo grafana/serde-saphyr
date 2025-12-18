@@ -471,7 +471,11 @@ fn capture_node(ev: &mut dyn Events) -> Result<KeyNode, Error> {
     }
 }
 
-/// True if `node` is the YAML merge key (`<<`) as an untagged plain scalar.
+/// True if `node` is the YAML merge key (`<<`).
+///
+/// Recognizes both:
+/// - Untagged plain scalar: `<<: *anchor`
+/// - Explicitly tagged: `!!merge <<: *anchor`
 ///
 /// Used by:
 /// - Mapping deserialization to trigger merge value expansion.
@@ -488,7 +492,7 @@ fn is_merge_key(node: &KeyNode) -> bool {
             tag,
             style: ScalarStyle::Plain,
             ..
-        }) if tag == &SfTag::None && value == "<<"
+        }) if (tag == &SfTag::None || tag == &SfTag::Merge) && value == "<<"
     )
 }
 

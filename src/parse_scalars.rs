@@ -202,17 +202,26 @@ fn radix_and_digits(legacy_octal: bool, rest: &str) -> (u32, &str) {
             (8u32, r)
         } else if let Some(r) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
             (2u32, r)
-        } else if legacy_octal && rest.starts_with("00") {
-            if rest == "00" {
-                // 00 is 0 and not empty string
-                (8u32, "0")
-            } else {
-                (8u32, &rest[2..])
-            }
+        } else if legacy_octal && is_yaml11_octal(rest) {
+            // YAML 1.1 octal: leading 0 followed by octal digits (0-7)
+            // e.g., 0755 -> octal 755 = decimal 493
+            (8u32, &rest[1..])
         } else {
             (10u32, rest)
         };
     (radix, digits)
+}
+
+/// Check if a string is a YAML 1.1 octal number.
+/// YAML 1.1 octal numbers start with 0 and contain only octal digits (0-7).
+/// Examples: 0755, 0644, 00 (which is just 0)
+fn is_yaml11_octal(s: &str) -> bool {
+    // Must start with '0' and have at least 2 characters (0 followed by something)
+    if !s.starts_with('0') || s.len() < 2 {
+        return false;
+    }
+    // All remaining characters must be octal digits (0-7)
+    s[1..].chars().all(|c| matches!(c, '0'..='7'))
 }
 
 #[cfg(feature = "robotics")]
@@ -252,6 +261,16 @@ where
         ".nan" | "+.nan" | "-.nan" => Ok(T::nan()),
         ".inf" | "+.inf" => Ok(T::infinity()),
         "-.inf" => Ok(T::neg_infinity()),
+        // Rust's parser accepts "infinity"/"inf" but these are NOT valid YAML 1.2 floats.
+        // YAML 1.2 only allows .inf/.nan syntax. Reject these so they stay as plain strings.
+        // Note: We still let "nan"/"-nan" fall through to Rust's parser, which will return
+        // NaN. This causes them to be quoted (which is desired for safety).
+        "infinity" | "+infinity" | "-infinity" | "inf" | "+inf" | "-inf" => {
+            Err(Error::msg(format!(
+                "invalid YAML 1.2 float (bare {} not allowed, use .inf)",
+                lower
+            )).with_location(location))
+        }
         _ => t.parse::<T>().map_err(|_| {
             Error::msg(format!(
                 "invalid floating point ({} value)",
@@ -377,8 +396,29 @@ mod tests {
     #[test]
     fn parse_int_signed_honors_legacy_octal_prefixes() {
         let loc = sample_location();
+        // YAML 1.1 octal with double-zero prefix (00755)
         let value: i32 = parse_int_signed("00077", "i32", loc, true).unwrap();
         assert_eq!(value, 0o77);
+
+        // YAML 1.1 octal with single-zero prefix (0755 -> 493 decimal)
+        let value: i32 = parse_int_signed("0755", "i32", loc, true).unwrap();
+        assert_eq!(value, 0o755); // 493 decimal
+
+        // More octal tests
+        let value: i32 = parse_int_signed("0644", "i32", loc, true).unwrap();
+        assert_eq!(value, 0o644); // 420 decimal
+
+        // 00 should be 0
+        let value: i32 = parse_int_signed("00", "i32", loc, true).unwrap();
+        assert_eq!(value, 0);
+
+        // Single 0 followed by 8 or 9 is NOT octal (invalid octal digits)
+        // Should be parsed as decimal
+        let value: i32 = parse_int_signed("09", "i32", loc, true).unwrap();
+        assert_eq!(value, 9); // decimal 9, not octal
+
+        let value: i32 = parse_int_signed("0123", "i32", loc, true).unwrap();
+        assert_eq!(value, 0o123); // 83 decimal
     }
 
     #[test]

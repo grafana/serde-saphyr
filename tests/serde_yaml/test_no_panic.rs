@@ -113,6 +113,7 @@ fn test_multiline_array() {
         multiline_array: Vec<String>,
     }
 
+    // Both formats are now accepted by saphyr parser
     let yaml_input = r#"
         multiline_array: [
           'item'
@@ -120,7 +121,7 @@ fn test_multiline_array() {
     "#;
 
     let parsed: Result<Data, Error> = serde_saphyr::from_str(yaml_input);
-    assert!(parsed.is_err(), "Multiline array should yield an error.");
+    assert!(parsed.is_ok(), "Multiline array should parse successfully.");
 
     let correct_yaml_input = r#"
         multiline_array: [
