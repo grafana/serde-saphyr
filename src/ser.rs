@@ -1410,14 +1410,7 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
             if v.unsigned_abs() >= threshold {
                 // Format as scientific notation to match Go's yaml.v3
                 // Go uses "+07" for positive exponents, Rust uses "7", so we format manually
-                let f = v as f64;
-                let exp = f.abs().log10().floor() as i32;
-                let mantissa = f / 10f64.powi(exp);
-                if exp >= 0 {
-                    write!(self.out, "{}e+{:02}", mantissa, exp)?;
-                } else {
-                    write!(self.out, "{}e{:03}", mantissa, exp)?;
-                }
+                write_go_scientific(self.out, v as f64)?;
             } else {
                 write!(self.out, "{}", v)?;
             }
@@ -1459,10 +1452,7 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
             if v >= threshold {
                 // Format as scientific notation to match Go's yaml.v3
                 // Go uses "+07" for positive exponents, Rust uses "7", so we format manually
-                let f = v as f64;
-                let exp = f.log10().floor() as i32;
-                let mantissa = f / 10f64.powi(exp);
-                write!(self.out, "{}e+{:02}", mantissa, exp)?;
+                write_go_scientific(self.out, v as f64)?;
             } else {
                 write!(self.out, "{}", v)?;
             }
@@ -1508,21 +1498,12 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
             if abs_v >= threshold as f64 {
                 // Format as scientific notation to match Go's yaml.v3
                 // Go uses "+06" for positive exponents, Rust uses "6", so we format manually
-                let exp = abs_v.log10().floor() as i32;
-                let mantissa = v / 10f64.powi(exp);
-                if exp >= 0 {
-                    write!(self.out, "{}e+{:02}", mantissa, exp)?;
-                } else {
-                    write!(self.out, "{}e{:03}", mantissa, exp)?;
-                }
+                write_go_scientific(self.out, v)?;
             } else if let Some(small_threshold) = self.scientific_notation_small_threshold {
                 // Check for small numbers that should use scientific notation
                 // This matches Go yaml.v3 behavior where small floats like 0.00002 become 2e-05
                 if abs_v > 0.0 && abs_v < small_threshold {
-                    let exp = abs_v.log10().floor() as i32;
-                    let mantissa = v / 10f64.powi(exp);
-                    // For negative exponents, format as e-XX (e.g., 2e-05)
-                    write!(self.out, "{}e{:03}", mantissa, exp)?;
+                    write_go_scientific(self.out, v)?;
                 } else {
                     // Below large threshold and above small threshold: use ryu for fast formatting
                     let mut buf = ryu::Buffer::new();
@@ -3670,6 +3651,73 @@ fn escaped_double_quoted_length(s: &str) -> usize {
             _ => 1, // Regular character
         })
         .sum()
+}
+
+/// Write `v` in scientific notation the way Go's `strconv.FormatFloat(v, 'g', -1, 64)`
+/// does, which is what `gopkg.in/yaml.v2` and `yaml.v3` emit.
+///
+/// The mantissa is taken from the shortest decimal representation that round-trips
+/// (via `ryu`) and the decimal point is moved *textually*. Deriving it
+/// arithmetically instead — `v / 10f64.powi(v.log10().floor())` — is wrong twice
+/// over: `10f64.powi(n)` is only exactly representable for `n` up to 22, so larger
+/// exponents divide by an approximation, and `log10().floor()` can land a digit out
+/// at the boundaries, leaving a mantissa outside `[1, 10)`. Both are visible at
+/// ordinary values: `1e100` came out as `0.9999999999999998e+100`, and 2^53 as
+/// `9.007199254740993e+15`, one too many.
+///
+/// The exponent is at least two digits wide, as Go's is: `1e+06`, `1e-05`,
+/// `1e+100`.
+fn write_go_scientific<W: Write>(out: &mut W, v: f64) -> fmt::Result {
+    if v == 0.0 {
+        // Signed zero keeps its sign, as Go's does.
+        return out.write_str(if v.is_sign_negative() { "-0e+00" } else { "0e+00" });
+    }
+
+    let mut buffer = ryu::Buffer::new();
+    let shortest = buffer.format_finite(v);
+
+    let (sign, shortest) = match shortest.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", shortest),
+    };
+
+    // ryu emits either `123.456` or `1.23456e78`; split the exponent off first.
+    let (mantissa, exponent) = match shortest.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().unwrap_or(0)),
+        None => (shortest, 0),
+    };
+
+    // Digits without the point, and where the point sat among them.
+    let (integer, fraction) = match mantissa.split_once('.') {
+        Some((integer, fraction)) => (integer, fraction),
+        None => (mantissa, ""),
+    };
+    let mut digits = String::with_capacity(integer.len() + fraction.len());
+    digits.push_str(integer);
+    digits.push_str(fraction);
+    let mut point = integer.len() as i32 + exponent;
+
+    // Leading zeros move the point rather than counting as significant.
+    let leading = digits.len() - digits.trim_start_matches('0').len();
+    digits.drain(..leading);
+    point -= leading as i32;
+
+    let trailing = digits.len() - digits.trim_end_matches('0').len();
+    digits.truncate(digits.len() - trailing);
+
+    debug_assert!(!digits.is_empty(), "a non-zero float has a non-zero digit");
+
+    out.write_str(sign)?;
+    out.write_str(&digits[..1])?;
+    if digits.len() > 1 {
+        out.write_str(".")?;
+        out.write_str(&digits[1..])?;
+    }
+
+    // `point` counts digits before the point; the exponent is one less.
+    let exponent = point - 1;
+    let sign = if exponent < 0 { '-' } else { '+' };
+    write!(out, "e{sign}{:02}", exponent.abs())
 }
 
 /// Check if a string looks like a number (all digits, possibly with leading zeros).

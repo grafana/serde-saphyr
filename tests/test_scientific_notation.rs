@@ -220,3 +220,91 @@ fn roundtrip_without_scientific_notation() {
     assert_eq!(original.value, parsed.value, "Value should roundtrip correctly");
 }
 
+
+/// Serialize one value the way tk's exporter does — scientific notation above a
+/// million and below a ten-thousandth — and return just the scalar.
+fn go_style<T: Serialize>(value: T) -> String {
+    #[derive(Serialize)]
+    struct Doc<T> {
+        v: T,
+    }
+
+    let opts = SerializerOptions {
+        scientific_notation_threshold: Some(1_000_000),
+        scientific_notation_small_threshold: Some(0.0001),
+        ..Default::default()
+    };
+
+    let mut out = String::new();
+    to_fmt_writer_with_options(&mut out, &Doc { v: value }, opts).unwrap();
+    out.trim_end().strip_prefix("v: ").unwrap().to_string()
+}
+
+/// Every expectation here is what Go's `strconv.FormatFloat(v, 'g', -1, 64)`
+/// produces, which is what `gopkg.in/yaml.v2` writes and therefore what Tanka
+/// exports. They were taken from real `tk export` output.
+#[test]
+fn scientific_notation_matches_go_exactly() {
+    // Exponents past 22, where `10f64.powi(exp)` stops being exact.
+    assert_eq!(go_style(1e100_f64), "1e+100");
+    assert_eq!(go_style(1e-100_f64), "1e-100");
+    assert_eq!(go_style(1e21_f64), "1e+21");
+
+    // 2^53, the last integer float64 counts to in ones. Dividing to find the
+    // mantissa rounds this up by one.
+    assert_eq!(go_style(9007199254740992_f64), "9.007199254740992e+15");
+
+    // The threshold itself, and just past it.
+    assert_eq!(go_style(1000000_f64), "1e+06");
+    assert_eq!(go_style(1000001_f64), "1.000001e+06");
+
+    // Sizes that turn up in real manifests.
+    assert_eq!(go_style(1048576_f64), "1.048576e+06");
+    assert_eq!(go_style(1073741824_f64), "1.073741824e+09");
+    assert_eq!(go_style(1500000000_f64), "1.5e+09");
+
+    // Below the small threshold.
+    assert_eq!(go_style(0.00001_f64), "1e-05");
+
+    // Signs are kept, on the mantissa and the exponent both.
+    assert_eq!(go_style(-1073741824_f64), "-1.073741824e+09");
+    assert_eq!(go_style(-1e-100_f64), "-1e-100");
+}
+
+/// Integers take a different path in the serializer, and must agree with it.
+#[test]
+fn scientific_notation_for_integers_matches_go() {
+    assert_eq!(go_style(1000000_u64), "1e+06");
+    assert_eq!(go_style(1073741824_u64), "1.073741824e+09");
+    assert_eq!(go_style(9007199254740992_u64), "9.007199254740992e+15");
+    // Larger than float64 counts in ones, so it lands on a neighbour — as it
+    // does in Go, which parses JSON numbers into float64 too.
+    assert_eq!(go_style(9223372036854775807_u64), "9.223372036854776e+18");
+
+    assert_eq!(go_style(1000000_i64), "1e+06");
+    assert_eq!(go_style(-1073741824_i64), "-1.073741824e+09");
+
+    // Below the threshold, integers stay integers.
+    assert_eq!(go_style(999999_u64), "999999");
+    assert_eq!(go_style(-999999_i64), "-999999");
+}
+
+/// Whatever is emitted has to read back as the same number.
+#[test]
+fn scientific_notation_round_trips() {
+    for value in [
+        1e100_f64,
+        1e-100,
+        9007199254740992.0,
+        1073741824.0,
+        1.000001e6,
+        0.00001,
+        -1e-100,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+    ] {
+        let text = go_style(value);
+        let parsed: f64 = text.parse().unwrap_or_else(|e| panic!("{text:?}: {e}"));
+        assert_eq!(parsed, value, "{text} did not read back as {value}");
+    }
+}

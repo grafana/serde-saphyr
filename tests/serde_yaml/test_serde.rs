@@ -35,10 +35,15 @@ fn test_int() {
 #[test]
 fn test_int_max_u64() {
     // u64::MAX serializes to scientific notation which can't deserialize back to u64
-    // Just verify serialization produces expected format
+    // Just verify serialization produces expected format.
+    //
+    // u64::MAX is not representable as an f64 and lands on 2^64, whose shortest
+    // round-tripping form — the one Go's strconv.FormatFloat(v, 'g', -1, 64)
+    // picks, and so the one yaml.v2 and yaml.v3 write — ends 552, not 551. Both
+    // read back as the same f64, but 552 is the closer of the two.
     let thing = u64::MAX;
     let serialized = serde_saphyr::to_string(&thing).unwrap();
-    assert_eq!(serialized, "1.8446744073709551e+19\n");
+    assert_eq!(serialized, "1.8446744073709552e+19\n");
 }
 
 #[test]
