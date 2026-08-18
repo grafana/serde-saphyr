@@ -57,6 +57,25 @@ use crate::ser_quoting::{is_plain_block_value_safe, is_plain_safe, is_plain_valu
 /// Result alias.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The sentinel struct and field name used by [`RawScalar`].
+///
+/// It is public so serializer adapters can implement the same protocol without
+/// depending on the wrapper type. Both the struct and its sole field must use
+/// this exact name.
+pub const RAW_SCALAR_TOKEN: &str = "$serde_saphyr::private::RawScalar";
+
+/// YAML plain-scalar text that is emitted without quoting or reformatting.
+///
+/// This is intended for scalar spellings that have already been selected by a
+/// compatible implementation, such as an exact numeric representation. The
+/// text is restricted to a conservative, flow-safe plain-scalar subset; it is
+/// validated both here and by the YAML serializer's sentinel handler.
+///
+/// Serializers that do not understand this protocol see a namespaced one-field
+/// struct, not an ordinary string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawScalar<'a>(pub &'a str);
+
 /// Force a sequence to be emitted in flow style: `[a, b, c]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FlowSeq<T>(pub T);
@@ -307,6 +326,16 @@ impl<T: Serialize> Serialize for FlowSeq<T> {
 impl<T: Serialize> Serialize for FlowMap<T> {
     fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         s.serialize_newtype_struct(NAME_FLOW_MAP, &self.0)
+    }
+}
+
+impl Serialize for RawScalar<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        validate_raw_plain_scalar(self.0).map_err(ser::Error::custom)?;
+
+        let mut state = serializer.serialize_struct(RAW_SCALAR_TOKEN, 1)?;
+        state.serialize_field(RAW_SCALAR_TOKEN, self.0)?;
+        state.end()
     }
 }
 
@@ -583,6 +612,17 @@ impl<'a, W: Write> YamlSer<'a, W> {
             self.newline()?;
         }
         Ok(())
+    }
+
+    fn write_raw_scalar(&mut self, value: &str) -> Result<()> {
+        validate_raw_plain_scalar(value).map_err(Error::from)?;
+        self.write_space_if_pending()?;
+        self.write_scalar_prefix_if_anchor()?;
+        if self.at_line_start {
+            self.write_indent(self.depth)?;
+        }
+        self.out.write_str(value)?;
+        self.write_end_of_scalar()
     }
 
     /// Allocate (or get existing) anchor id for a pointer identity.
@@ -1374,7 +1414,7 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
     type SerializeTupleStruct = TupleSer<'a, 'b, W>;
     type SerializeTupleVariant = TupleVariantSer<'a, 'b, W>;
     type SerializeMap = MapSer<'a, 'b, W>;
-    type SerializeStruct = MapSer<'a, 'b, W>;
+    type SerializeStruct = StructSer<'a, 'b, W>;
     type SerializeStructVariant = StructVariantSer<'a, 'b, W>;
 
     // -------- Scalars --------
@@ -2461,8 +2501,20 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
         }
     }
 
-    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
-        self.serialize_map(None)
+    fn serialize_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
+        if name == RAW_SCALAR_TOKEN {
+            if len != 1 {
+                return Err(Error::unexpected(
+                    "raw scalar sentinel must contain one field",
+                ));
+            }
+            Ok(StructSer::RawScalar(RawScalarSer {
+                ser: self,
+                value: None,
+            }))
+        } else {
+            self.serialize_map(Some(len)).map(StructSer::Map)
+        }
     }
 
     fn serialize_struct_variant(
@@ -2891,6 +2943,69 @@ impl<'a, 'b, W: Write> SerializeTupleVariant for TupleVariantSer<'a, 'b, W> {
 // ------------------------------------------------------------
 // Map / Struct serializers
 // ------------------------------------------------------------
+
+/// Dispatcher for ordinary structs and the [`RawScalar`] sentinel struct.
+pub enum StructSer<'a, 'b, W: Write> {
+    Map(MapSer<'a, 'b, W>),
+    RawScalar(RawScalarSer<'a, 'b, W>),
+}
+
+impl<'a, 'b, W: Write> SerializeStruct for StructSer<'a, 'b, W> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_field<T: ?Sized + Serialize>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<()> {
+        match self {
+            StructSer::Map(map) => SerializeStruct::serialize_field(map, key, value),
+            StructSer::RawScalar(raw) => raw.serialize_field(key, value),
+        }
+    }
+
+    fn end(self) -> Result<()> {
+        match self {
+            StructSer::Map(map) => SerializeStruct::end(map),
+            StructSer::RawScalar(raw) => raw.end(),
+        }
+    }
+}
+
+pub struct RawScalarSer<'a, 'b, W: Write> {
+    ser: &'a mut YamlSer<'b, W>,
+    value: Option<String>,
+}
+
+impl<'a, 'b, W: Write> RawScalarSer<'a, 'b, W> {
+    fn serialize_field<T: ?Sized + Serialize>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<()> {
+        if key != RAW_SCALAR_TOKEN {
+            return Err(Error::unexpected("invalid raw scalar sentinel field"));
+        }
+        if self.value.is_some() {
+            return Err(Error::unexpected("duplicate raw scalar sentinel field"));
+        }
+
+        let mut capture = StrCapture::default();
+        value.serialize(&mut capture)?;
+        let value = capture.finish()?;
+        validate_raw_plain_scalar(&value).map_err(Error::from)?;
+        self.value = Some(value);
+        Ok(())
+    }
+
+    fn end(self) -> Result<()> {
+        let value = self
+            .value
+            .ok_or_else(|| Error::unexpected("missing raw scalar sentinel field"))?;
+        self.ser.write_raw_scalar(&value)
+    }
+}
 
 /// Serializer for maps and structs.
 ///
@@ -3595,6 +3710,45 @@ impl StrCapture {
 // String helpers
 // ------------------------------------------------------------
 
+fn validate_raw_plain_scalar(value: &str) -> std::result::Result<(), &'static str> {
+    if value.is_empty() {
+        return Err("raw scalar must not be empty");
+    }
+    if value.trim() != value {
+        return Err("raw scalar must not have leading or trailing whitespace");
+    }
+    if value == "---" || value == "..." {
+        return Err("raw scalar must not be a YAML document marker");
+    }
+    if value.chars().any(|character| {
+        character.is_control()
+            || matches!(
+                character,
+                '\u{85}' | '\u{2028}' | '\u{2029}' | '[' | ']' | '{' | '}' | ','
+            )
+    }) {
+        return Err("raw scalar contains characters unsafe in a flow scalar");
+    }
+    if value.contains(": ") || value.contains(" #") || value.ends_with(':') {
+        return Err("raw scalar contains YAML mapping or comment syntax");
+    }
+
+    let first = value.as_bytes()[0];
+    if matches!(
+        first,
+        b'#' | b'&' | b'*' | b'!' | b'|' | b'>' | b'\'' | b'"' | b'%' | b'@' | b'`'
+    ) {
+        return Err("raw scalar begins with a YAML indicator");
+    }
+    if matches!(first, b'-' | b'?' | b':')
+        && value.as_bytes().get(1).is_none_or(u8::is_ascii_whitespace)
+    {
+        return Err("raw scalar begins with a reserved YAML indicator");
+    }
+
+    Ok(())
+}
+
 /// Check if any line in the string has trailing whitespace (space or tab).
 /// Go's yaml.v3 falls back to double-quoted strings for values with trailing
 /// whitespace on lines, so we should do the same for compatibility.
@@ -3639,7 +3793,7 @@ fn escaped_double_quoted_length(s: &str) -> usize {
             | '\u{1b}' => 2, // Simple escapes like \\, \", \0, \a, \b, \t, \n, \v, \f, \r, \e
             '\u{0085}' | '\u{2028}' | '\u{2029}' => 2, // \N, \L, \P
             '\u{FEFF}' => 6,                           // \uFEFF
-            c if (c as u32) >= 0x10000 => 10,         // \U00XXXXXX (non-BMP)
+            c if (c as u32) >= 0x10000 => 10,          // \U00XXXXXX (non-BMP)
             c if (c as u32) <= 0xFF && (c.is_control() || (0x7F..=0x9F).contains(&(c as u32))) => {
                 4 // \xXX
             }
@@ -3670,7 +3824,11 @@ fn escaped_double_quoted_length(s: &str) -> usize {
 fn write_go_scientific<W: Write>(out: &mut W, v: f64) -> fmt::Result {
     if v == 0.0 {
         // Signed zero keeps its sign, as Go's does.
-        return out.write_str(if v.is_sign_negative() { "-0e+00" } else { "0e+00" });
+        return out.write_str(if v.is_sign_negative() {
+            "-0e+00"
+        } else {
+            "0e+00"
+        });
     }
 
     let mut buffer = ryu::Buffer::new();
