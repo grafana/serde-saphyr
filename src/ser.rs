@@ -500,6 +500,7 @@ pub struct YamlSer<'a, W: Write> {
     /// Threshold for scientific notation of small numbers. When Some(threshold), numbers with
     /// abs > 0 and < threshold use scientific notation (e.g., 2e-05). When None, plain decimal is used.
     scientific_notation_small_threshold: Option<f64>,
+    go_style_negative_zero: bool,
     /// Override for block scalar chomp indicator. When Some, forces the specified
     /// chomp behavior instead of auto-detecting based on trailing newlines.
     block_scalar_chomp: Option<ChompIndicator>,
@@ -557,6 +558,7 @@ impl<'a, W: Write> YamlSer<'a, W> {
             line_width: None,
             scientific_notation_threshold: Some(1_000_000),
             scientific_notation_small_threshold: None,
+            go_style_negative_zero: false,
             block_scalar_chomp: None,
             last_key_len: 0,
             quote_numeric_strings: false,
@@ -590,6 +592,7 @@ impl<'a, W: Write> YamlSer<'a, W> {
         s.line_width = options.line_width;
         s.scientific_notation_threshold = options.scientific_notation_threshold;
         s.scientific_notation_small_threshold = options.scientific_notation_small_threshold;
+        s.go_style_negative_zero = options.go_style_negative_zero;
         s.block_scalar_chomp = options.block_scalar_chomp;
         s.quote_numeric_strings = options.quote_numeric_strings;
         s.quote_ambiguous_keys = options.quote_ambiguous_keys;
@@ -1531,6 +1534,10 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
             } else {
                 self.out.write_str("-.inf")?;
             }
+        } else if self.go_style_negative_zero && v == 0.0 && v.is_sign_negative() {
+            // Ahead of the threshold branches, so the spelling does not depend
+            // on how scientific notation happens to be configured.
+            self.out.write_str("-0")?;
         } else if let Some(threshold) = self.scientific_notation_threshold {
             // Apply threshold to floats: use scientific notation for large values
             // This matches Go yaml.v3 behavior where floats >= 1 million use scientific notation

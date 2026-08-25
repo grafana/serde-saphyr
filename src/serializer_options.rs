@@ -124,6 +124,18 @@ pub struct SerializerOptions {
     ///
     /// Default: `None` (preserves backwards compatibility)
     pub scientific_notation_small_threshold: Option<f64>,
+    /// Spell a negative zero the way Go does, as `-0` rather than `-0.0`.
+    ///
+    /// A negative zero is the one float whose sign cannot survive being written
+    /// as an integer, so it has to be emitted as a float — and Go's
+    /// `strconv.FormatFloat(f, 'g', -1, 64)`, which `gopkg.in/yaml.v2` and
+    /// `yaml.v3` use, writes it without a fractional part. The shortest
+    /// round-tripping representation this crate otherwise uses gives `-0.0`.
+    ///
+    /// Both parse back to a negative zero; this only decides the bytes.
+    ///
+    /// Default: `false` (preserves backwards compatibility)
+    pub go_style_negative_zero: bool,
     /// Controls the chomp indicator for block scalars.
     ///
     /// - `None` (default): Auto-detect based on trailing newlines (current behavior)
@@ -215,6 +227,7 @@ impl Default for SerializerOptions {
             line_width: None,
             scientific_notation_threshold: Some(1_000_000),
             scientific_notation_small_threshold: None,
+            go_style_negative_zero: false,
             block_scalar_chomp: None,
             quote_numeric_strings: false,
             block_scalar_indent_in_seq: None,
