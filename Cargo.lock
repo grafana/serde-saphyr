@@ -512,8 +512,8 @@ dependencies = [
 
 [[package]]
 name = "saphyr-parser"
-version = "0.0.6"
-source = "git+https://github.com/grafana/saphyr?branch=master#bd64ba34832792080dc7ad5f70df16e13be77a2f"
+version = "0.0.11"
+source = "git+https://github.com/grafana/saphyr?rev=0d26c036f086f61207282671c802643037cd5f0e#0d26c036f086f61207282671c802643037cd5f0e"
 dependencies = [
  "arraydeque",
  "thiserror",

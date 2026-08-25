@@ -11,7 +11,11 @@ categories = ["encoding", "parser-implementations", "config"]
 keywords = ["yaml", "serde", "serialization", "config", "ros"]
 
 [dependencies]
-saphyr-parser = { git = "https://github.com/grafana/saphyr", branch = "master" }
+# Pinned by rev rather than tracked by branch so that a consumer pinning the
+# same rev resolves one saphyr-parser rather than two: cargo treats
+# `?branch=` and `?rev=` as distinct sources even at the same commit.
+# Tip of grafana/saphyr `jj/live-key-ordering`.
+saphyr-parser = { git = "https://github.com/grafana/saphyr", rev = "0d26c036f086f61207282671c802643037cd5f0e" }
 serde = { version = "1", features = ["derive"] }
 # Our all tests are fine with alpha.
 smallvec = "2.0.0-alpha.12"
