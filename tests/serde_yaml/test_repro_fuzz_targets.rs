@@ -1,6 +1,6 @@
 use serde_json::Value;
 use serde_saphyr::budget::Budget;
-use serde_saphyr::{Error, Options};
+use serde_saphyr::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str;
@@ -18,9 +18,8 @@ use std::str;
 pub fn exceeds_yaml_budget(input: &str, budget: &Budget) -> Result<bool, Error> {
     let report: Result<Value, Error> = serde_saphyr::from_str_with_options(
         input,
-        Options {
+        serde_saphyr::options! {
             budget: Some(budget.clone()),
-            ..serde_saphyr::Options::default()
         },
     );
     Ok(report.is_err())
@@ -164,10 +163,7 @@ fn repro_alias_merges_crashes() {
     for f in files {
         let data = match fs::read(&f) {
             Ok(b) => b,
-            Err(e) => {
-                eprintln!("read {} failed: {e}", f.display());
-                continue;
-            }
+            Err(_) => continue,
         };
         let ok = run_aliases_merges_on(&data);
         assert!(
@@ -192,10 +188,7 @@ fn repro_duplicate_keys_crashes() {
     for f in files {
         let data = match fs::read(&f) {
             Ok(b) => b,
-            Err(e) => {
-                eprintln!("read {} failed: {e}", f.display());
-                continue;
-            }
+            Err(_) => continue,
         };
         let ok = run_duplicate_keys_on(&data);
         assert!(
@@ -220,10 +213,7 @@ fn repro_flow_collections_crashes() {
     for f in files {
         let data = match fs::read(&f) {
             Ok(b) => b,
-            Err(e) => {
-                eprintln!("read {} failed: {e}", f.display());
-                continue;
-            }
+            Err(_) => continue,
         };
         let ok = run_flow_collections_on(&data);
         assert!(!ok, "{}", f.display());
@@ -244,12 +234,8 @@ fn repro_large_scalars_crashes() {
     for f in files {
         let data = match fs::read(&f) {
             Ok(b) => b,
-            Err(e) => {
-                eprintln!("read {} failed: {e}", f.display());
-                continue;
-            }
+            Err(_) => continue,
         };
-        println!("Testing {}", f.display());
         let ok = run_large_scalars_on(&data);
         assert!(!ok, "{}", f.display());
     }

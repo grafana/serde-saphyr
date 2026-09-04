@@ -1,8 +1,21 @@
-// saphyr-parser 0.0.6 does not emit closing event.
-#[ignore]
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
+use serde_saphyr::granit_parser::ErrorKind;
+use serde_saphyr::{Error, ExternalMessageSource};
+
+// granit-parser 0.0.6 does not emit closing event.
 #[test]
-fn debug_extra_bracket_should_err() {
+fn extra_bracket_should_err() {
     let y = "---\n[ a, b, c ] ]\n";
-    let result: Result<Vec<String>, _> = serde_saphyr::from_str(y);
-    assert!(result.is_err(), "expected error, got Ok: {:?}", result.ok());
+    let result: Error = serde_saphyr::from_str::<serde_json::Value>(y).expect_err("Expected error");
+    assert!(matches!(
+        result.without_snippet(),
+        Error::ExternalMessage {
+            source,
+            ..
+        } if matches!(
+            source.as_ref(),
+            ExternalMessageSource::Parser(error)
+                if *error.kind() == ErrorKind::MisplacedFlowCollectionEnd
+        )
+    ));
 }

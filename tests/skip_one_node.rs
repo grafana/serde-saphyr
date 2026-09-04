@@ -1,13 +1,13 @@
-#[cfg(test)]
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 mod tests {
     use serde_json::Value;
-    use std::collections::BTreeMap;
-    use serde_saphyr::{from_str_with_options, Options};
-    use serde_saphyr::options::DuplicateKeyPolicy;
     use serde_saphyr::Error;
+    use serde_saphyr::from_str_with_options;
+    use serde_saphyr::options::{DuplicateKeyPolicy, MergeKeyPolicy};
+    use std::collections::BTreeMap;
 
-    /// Parse a YAML mapping into a BTreeMap<String, serde_json::Value>,
-    /// configuring the deserializer to use DuplicateKeyPolicy::FirstWins.
+    /// Parse a YAML mapping into a `BTreeMap<String, serde_json::Value>`,
+    /// configuring the deserializer to use `DuplicateKeyPolicy::FirstWins`.
     ///
     /// Params:
     /// - `yaml`: the YAML input as &str.
@@ -15,9 +15,18 @@ mod tests {
     /// Returns:
     /// - `Result<BTreeMap<String, Value>, Error>` with parsed map or a deserialization error.
     fn parse_first_wins_map(yaml: &str) -> Result<BTreeMap<String, Value>, Error> {
-        let opts = Options {
+        let opts = serde_saphyr::options! {
             duplicate_keys: DuplicateKeyPolicy::FirstWins,
-            ..Options::default()
+        };
+        from_str_with_options::<BTreeMap<String, Value>>(yaml, opts)
+    }
+
+    fn parse_first_wins_map_rejecting_merge_keys(
+        yaml: &str,
+    ) -> Result<BTreeMap<String, Value>, Error> {
+        let opts = serde_saphyr::options! {
+            duplicate_keys: DuplicateKeyPolicy::FirstWins,
+            merge_keys: MergeKeyPolicy::Error,
         };
         from_str_with_options::<BTreeMap<String, Value>>(yaml, opts)
     }
@@ -108,10 +117,43 @@ a: null
 b: ok
 "#;
         let map = parse_first_wins_map(yaml).expect("parse ok");
-        assert_eq!(
-            map.get("a"),
-            Some(&serde_json::json!({ "keep": true }))
-        );
+        assert_eq!(map.get("a"), Some(&serde_json::json!({ "keep": true })));
+        assert_eq!(map.get("b"), Some(&Value::from("ok")));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn first_wins_rejects_merge_key_inside_skipped_duplicate_value() {
+        let yaml = r#"
+a: { keep: true }
+a:
+  nested:
+    <<: { admin: true }
+b: ok
+"#;
+
+        let err = parse_first_wins_map_rejecting_merge_keys(yaml)
+            .expect_err("merge key in skipped duplicate value must be rejected");
+
+        assert!(matches!(
+            err.without_snippet(),
+            Error::MergeKeyNotAllowed { .. }
+        ));
+    }
+
+    #[test]
+    fn first_wins_allows_quoted_merge_key_inside_skipped_duplicate_value() {
+        let yaml = r#"
+a: { keep: true }
+a:
+  nested:
+    "<<": { admin: true }
+b: ok
+"#;
+
+        let map = parse_first_wins_map_rejecting_merge_keys(yaml).expect("quoted key is literal");
+
+        assert_eq!(map.get("a"), Some(&serde_json::json!({ "keep": true })));
         assert_eq!(map.get("b"), Some(&Value::from("ok")));
         assert_eq!(map.len(), 2);
     }

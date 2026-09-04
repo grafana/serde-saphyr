@@ -14,23 +14,19 @@
 // BB.....BB.
 // ..........
 
-
 use serde::Deserialize;
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Default)]
 enum Tree {
+    #[default]
     Oak,
     Acer,
     Birch,
 }
 
-impl Default for Tree {
-    fn default() -> Self {
-        Tree::Oak
-    }
+fn default_birch() -> Tree {
+    Tree::Birch
 }
-
-fn default_birch() -> Tree { Tree::Birch }
 
 #[derive(Clone, Copy, Deserialize)]
 enum Direction {
@@ -48,7 +44,7 @@ enum Command {
     #[serde(rename = "plant")]
     Plant(#[serde(default)] Option<PlantArgs>),
     #[serde(rename = "multistep")]
-    MultiStep { steps: Vec<Command> }
+    MultiStep { steps: Vec<Command> },
 }
 
 // Here we complicate a bit to show we can use a structure rather than enum variant
@@ -90,14 +86,10 @@ impl Robot {
 
     fn turn(&mut self, dir: Direction) {
         self.facing = match (self.facing, dir) {
-            (Facing::North, Direction::Left) => Facing::West,
-            (Facing::North, Direction::Right) => Facing::East,
-            (Facing::East, Direction::Left) => Facing::North,
-            (Facing::East, Direction::Right) => Facing::South,
-            (Facing::South, Direction::Left) => Facing::East,
-            (Facing::South, Direction::Right) => Facing::West,
-            (Facing::West, Direction::Left) => Facing::South,
-            (Facing::West, Direction::Right) => Facing::North,
+            (Facing::North, Direction::Left) | (Facing::South, Direction::Right) => Facing::West,
+            (Facing::North, Direction::Right) | (Facing::South, Direction::Left) => Facing::East,
+            (Facing::East, Direction::Left) | (Facing::West, Direction::Right) => Facing::North,
+            (Facing::East, Direction::Right) | (Facing::West, Direction::Left) => Facing::South,
         };
     }
 
@@ -111,7 +103,7 @@ impl Robot {
             };
             let nx = self.x + dx;
             let ny = self.y + dy;
-            if nx >= 0 && nx <= 9 && ny >= 0 && ny <= 7 {
+            if (0..=9).contains(&nx) && (0..=7).contains(&ny) {
                 self.x = nx;
                 self.y = ny;
             } else {
@@ -135,17 +127,17 @@ impl Robot {
 }
 
 fn print_field(field: &[[char; 10]; 8], rx: i32, ry: i32) {
-    for y in (0..=7).rev() {
-        // print top (y=7) to bottom (y=0)
+    // Print top (y=7) to bottom (y=0)
+    for (y, row) in field.iter().enumerate().rev() {
         let mut line = String::with_capacity(10);
-        for x in 0..=9 {
+        for (x, ch) in row.iter().enumerate() {
             if x as i32 == rx && y as i32 == ry {
                 line.push('R');
             } else {
-                line.push(field[y][x]);
+                line.push(*ch);
             }
         }
-        println!("{}", line);
+        println!("{line}");
     }
 }
 
@@ -156,7 +148,7 @@ fn run_program(robot: &mut Robot, field: &mut [[char; 10]; 8], program: &[Comman
             Command::Turn { direction } => robot.turn(direction),
             Command::Plant(opt) => {
                 let tree = opt.unwrap_or(PlantArgs { tree: Tree::Birch }).tree;
-                robot.plant(field, tree)
+                robot.plant(field, tree);
             }
             Command::MultiStep { steps } => {
                 // Execute the nested subprogram recursively

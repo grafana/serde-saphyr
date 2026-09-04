@@ -1,8 +1,9 @@
+use crate::serde_yaml::adapt_to_miri;
 use indoc::indoc;
 use serde::Deserialize as Derive;
+use serde_json::Value;
 use serde_saphyr::Error;
 use std::fmt::Debug;
-use serde_json::Value;
 
 #[derive(Derive, Debug)]
 #[allow(dead_code)]
@@ -11,7 +12,6 @@ enum Node {
     List(Vec<Node>),
 }
 
-#[cfg(not(miri))]
 #[test]
 fn test_enum_billion_laughs_with_tags() {
     let yaml = indoc! {
@@ -27,13 +27,11 @@ fn test_enum_billion_laughs_with_tags() {
         i: &i !List [*h,*h,*h,*h,*h,*h,*h,*h,*h]
         "
     };
-    let parsed: Result<Value, Error> = serde_saphyr::from_str(&yaml);
-    assert!(parsed.is_err());
-    println!("{:?}", parsed);
-    assert!(format!("{}", parsed.unwrap_err()).contains("budget breached"));
+    let parsed: Result<Value, Error> = serde_saphyr::from_str_with_options(yaml, adapt_to_miri());
+    let err = parsed.unwrap_err();
+    assert_budget_error(&err);
 }
 
-#[cfg(not(miri))]
 #[test]
 fn test_enum_billion_laughs() {
     let yaml = indoc! {
@@ -49,12 +47,10 @@ fn test_enum_billion_laughs() {
         i: &i  [*h,*h,*h,*h,*h,*h,*h,*h,*h]
         "
     };
-    let parsed: Result<Value, Error> = serde_saphyr::from_str(&yaml);
-    assert!(parsed.is_err());
-    println!("{:?}", parsed);
-    assert!(format!("{}", parsed.unwrap_err()).contains("budget breached"));
+    let parsed: Result<Value, Error> = serde_saphyr::from_str_with_options(yaml, adapt_to_miri());
+    let err = parsed.unwrap_err();
+    assert_budget_error(&err);
 }
-
 
 #[test]
 fn test_smaller_with_tags() {
@@ -65,7 +61,7 @@ fn test_smaller_with_tags() {
         c: &c !List [*b,*b]
         "
     };
-    let parsed: Result<Value, Error> = serde_saphyr::from_str(&yaml);
+    let parsed: Result<Value, Error> = serde_saphyr::from_str(yaml);
     assert!(parsed.is_ok(), "{parsed:?}");
 }
 
@@ -78,6 +74,16 @@ fn test_smaller() {
         c: &c [*b,*b]
         "
     };
-    let parsed: Result<Value, Error> = serde_saphyr::from_str(&yaml);
+    let parsed: Result<Value, Error> = serde_saphyr::from_str(yaml);
     assert!(parsed.is_ok(), "{parsed:?}");
+}
+
+#[track_caller]
+fn assert_budget_error(err: &Error) {
+    match err.without_snippet() {
+        Error::Budget { .. } => {}
+        // Alias replay preserves dual locations by storing the inner error as text.
+        Error::AliasError { msg, .. } if msg.starts_with("budget breached") => {}
+        other => panic!("expected budget error, got {other:?}"),
+    }
 }

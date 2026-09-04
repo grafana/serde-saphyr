@@ -1,3 +1,5 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
+use rstest::rstest;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -14,77 +16,90 @@ fn test_yaml_malformed() {
     #[derive(Debug, Deserialize)]
     #[allow(dead_code)]
     struct TestStruct {
-        x: String
+        x: String,
     }
 
     let yaml_input = "\n    x {\n        ";
     let result: Result<TestStruct, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Parsing invalid YAML should fail with an error, not succeed.");
+    assert!(
+        result.is_err(),
+        "Parsing invalid YAML should fail with an error, not succeed."
+    );
+}
+
+#[rstest]
+#[case::unmatched_brackets("{key: [value1, value2")]
+#[case::invalid_escape_sequence(r#"key: "Invalid\xEscape""#)]
+#[case::invalid_boolean_tagged("key: !!bool truue")]
+#[case::incomplete_quoting("key: \"unterminated string")]
+#[case::invalid_anchor_reference("key: *undefined_anchor")]
+#[case::cyclic_references("&a [ *a ]")]
+#[case::unexpected_eof("{key: value")]
+fn test_invalid_yaml_errors_without_panic(#[case] yaml_input: &str) {
+    let result: Result<Mura, _> = serde_saphyr::from_str(yaml_input);
+    assert!(
+        result.is_err(),
+        "expected error for input `{yaml_input}`, got Ok"
+    );
 }
 
 #[test]
-fn test_lexer_errors() {
-    let yaml_input = ">\n@ !";
-    let result: Result<Mura, _> = serde_saphyr::from_str(yaml_input);
+fn zero_indented_root_folded_scalar_is_valid() {
+    let result: serde_json::Value =
+        serde_saphyr::from_str(">\n@ !").expect("root folded scalar should deserialize");
 
-    // The YAML input is invalid, so expect an Err, but no panic
-    assert!(result.is_err(), "Parsing invalid YAML should return an error, not panic.");
-}
-
-#[test]
-fn test_unmatched_brackets() {
-    let yaml_input = "{key: [value1, value2";
-    let result: Result<Mura, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Unmatched brackets should yield an error without panic.");
-}
-
-#[test]
-fn test_invalid_escape_sequence() {
-    let yaml_input = r#"key: "Invalid\xEscape""#;
-    let result: Result<Mura, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Invalid escape sequences should yield an error without panic.");
-}
-
-#[test]
-fn test_invalid_boolean_tagged() {
-    let yaml_input = "key: !!bool truue";
-    let result: Result<Mura, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Tagged invalid boolean should yield an error without panic.");
+    assert_eq!(result, serde_json::Value::String("@ !\n".to_string()));
 }
 
 #[test]
 fn test_deeply_nested_structures() {
     let yaml_input = format!("{}{}", "[".repeat(10_000), "]".repeat(10_000));
     let result: Result<Mura, _> = serde_saphyr::from_str(&yaml_input);
-    assert!(result.is_err(), "Deeply nested structures should gracefully return an error.");
+    assert!(
+        result.is_err(),
+        "Deeply nested structures should gracefully return an error."
+    );
 }
 
 #[test]
-fn test_incomplete_quoting() {
-    let yaml_input = "key: \"unterminated string";
-    let result: Result<Mura, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Incomplete quoting should yield an error.");
+fn deeply_nested_block_mapping_errors_without_abort() {
+    let yaml = deeply_nested_block_mapping_yaml(serde_saphyr::Budget::default().max_depth + 1);
+    let err = serde_saphyr::from_str::<serde_json::Value>(&yaml).unwrap_err();
+    assert_budget_depth_error(&err);
+
+    let err =
+        serde_saphyr::from_reader::<_, serde_json::Value>(std::io::Cursor::new(yaml.as_bytes()))
+            .unwrap_err();
+    assert_budget_depth_error(&err);
 }
 
-#[test]
-fn test_invalid_anchor_reference() {
-    let yaml_input = "key: *undefined_anchor";
-    let result: Result<Mura, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Undefined anchors should yield an error.");
+#[track_caller]
+fn assert_budget_depth_error(err: &serde_saphyr::Error) {
+    assert!(matches!(
+        budget_error_inner(err),
+        serde_saphyr::Error::Budget {
+            breach: serde_saphyr::budget::BudgetBreach::Depth { .. },
+            ..
+        }
+    ));
 }
 
-#[test]
-fn test_cyclic_references() {
-    let yaml_input = "&a [ *a ]";
-    let result: Result<Mura, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Cyclic references should yield an error.");
+fn budget_error_inner(err: &serde_saphyr::Error) -> &serde_saphyr::Error {
+    match err {
+        serde_saphyr::Error::WithSnippet { error, .. } => budget_error_inner(error),
+        err => err,
+    }
 }
 
-#[test]
-fn test_unexpected_eof() {
-    let yaml_input = "{key: value";
-    let result: Result<Mura, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Unexpected EOF should yield an error.");
+fn deeply_nested_block_mapping_yaml(depth: usize) -> String {
+    let mut yaml = String::new();
+    for level in 0..depth {
+        yaml.extend(std::iter::repeat_n(' ', level));
+        yaml.push_str("k:\n");
+    }
+    yaml.extend(std::iter::repeat_n(' ', depth));
+    yaml.push_str("leaf: 0\n");
+    yaml
 }
 
 #[test]

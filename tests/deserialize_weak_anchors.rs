@@ -1,9 +1,10 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 use std::rc::Rc;
 use std::sync::Arc;
 
 use indoc::indoc;
 use serde::Deserialize;
-use serde_saphyr::{from_str, ArcAnchor, ArcWeakAnchor, RcAnchor, RcWeakAnchor};
+use serde_saphyr::{ArcAnchor, ArcWeakAnchor, RcAnchor, RcWeakAnchor, from_str};
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 struct Node {
@@ -58,7 +59,10 @@ fn rc_weak_anchor_before_strong_should_error() {
           name: later
     "#};
     let res: Result<RcDoc, _> = from_str(y);
-    assert!(res.is_err(), "expected error when weak alias appears before strong anchor");
+    assert!(
+        res.is_err(),
+        "expected error when weak alias appears before strong anchor"
+    );
 }
 
 #[test]
@@ -71,5 +75,20 @@ fn arc_weak_anchor_non_alias_should_error() {
           name: not-an-alias
     "#};
     let res: Result<ArcDoc, _> = from_str(y);
-    assert!(res.is_err(), "expected error when weak value is not an alias");
+    assert!(
+        res.is_err(),
+        "expected error when weak value is not an alias"
+    );
+}
+
+#[test]
+fn rc_weak_anchor_null_deserializes_to_dangling() {
+    let weak: RcWeakAnchor<Node> = from_str("null").expect("null should deserialize as dangling");
+    assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn arc_weak_anchor_null_deserializes_to_dangling() {
+    let weak: ArcWeakAnchor<Node> = from_str("null").expect("null should deserialize as dangling");
+    assert!(weak.upgrade().is_none());
 }

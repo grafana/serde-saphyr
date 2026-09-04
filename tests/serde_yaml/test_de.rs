@@ -6,12 +6,13 @@
     clippy::uninlined_format_args
 )]
 
+use crate::serde_yaml::adapt_to_miri;
 use indoc::indoc;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
-use std::fmt::Debug;
 use serde_json::Value;
 use serde_saphyr::Error;
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::Debug;
 
 fn test_de<T>(yaml: &str, expected: &T)
 where
@@ -214,7 +215,6 @@ fn test_enum_alias() {
     test_de(yaml, &expected);
 }
 
-
 #[test]
 fn test_number_as_string() {
     #[derive(Deserialize, PartialEq, Debug)]
@@ -288,18 +288,12 @@ fn test_i128_big() {
     let yaml = indoc! {"
         -9223372036854775809
     "};
-    assert_eq!(
-        expected,
-        serde_saphyr::from_str(yaml).unwrap()
-    );
+    assert_eq!(expected, serde_saphyr::from_str(yaml).unwrap());
 
     let octal = indoc! {"
         -0o1000000000000000000001
     "};
-    assert_eq!(
-        expected,
-        serde_saphyr::from_str(octal).unwrap()
-    );
+    assert_eq!(expected, serde_saphyr::from_str(octal).unwrap());
 }
 
 #[test]
@@ -308,18 +302,12 @@ fn test_u128_big() {
     let yaml = indoc! {"
         18446744073709551616
     "};
-    assert_eq!(
-        expected,
-        serde_saphyr::from_str(yaml).unwrap()
-    );
+    assert_eq!(expected, serde_saphyr::from_str(yaml).unwrap());
 
     let octal = indoc! {"
         0o2000000000000000000000
     "};
-    assert_eq!(
-        expected,
-        serde_saphyr::from_str(octal).unwrap()
-    );
+    assert_eq!(expected, serde_saphyr::from_str(octal).unwrap());
 }
 
 #[test]
@@ -386,7 +374,7 @@ fn test_bomb() {
         expected: string
     "};
     // Budget breach
-    let result:  Result<Data, Error> = serde_saphyr::from_str(yaml);
+    let result: Result<Data, Error> = serde_saphyr::from_str_with_options(yaml, adapt_to_miri());
     assert!(result.is_err());
 }
 
@@ -416,15 +404,22 @@ fn test_numbers() {
         (".NAN", ".nan"),
         ("0.1", "0.1"),
     ];
+    let options = serde_saphyr::options! {
+        reject_non_finite_typeless_float: false,
+    };
     for &(yaml, expected) in &cases {
-        let value = serde_saphyr::from_str::<Value>(yaml).unwrap();
-        assert_eq!(value.to_string().trim_matches('"'), expected, "For YAML: {yaml}");
+        let value = serde_saphyr::from_str_with_options::<Value>(yaml, options.clone()).unwrap();
+        assert_eq!(
+            value.to_string().trim_matches('"'),
+            expected,
+            "For YAML: {yaml}"
+        );
     }
 
     // NOT numbers.
     let cases = [
-        "++.inf", "+-.inf", "++1", "+-1", "-+1", "--1", "+--1", "0x+1",
-        "0x-1", "-0x+1", "-0x-1", "++0x1", "+-0x1", "-+0x1", "--0x1",
+        "++.inf", "+-.inf", "++1", "+-1", "-+1", "--1", "+--1", "0x+1", "0x-1", "-0x+1", "-0x-1",
+        "++0x1", "+-0x1", "-+0x1", "--0x1",
     ];
     for yaml in &cases {
         let value = serde_saphyr::from_str::<Value>(yaml).unwrap();
@@ -539,13 +534,11 @@ fn test_empty_scalar() {
 
     let yaml = "thing:\n";
     let expected = Struct {
-        thing: empty_vector
+        thing: empty_vector,
     };
     test_de(yaml, &expected);
 
-    let expected = Struct {
-        thing: empty_map
-    };
+    let expected = Struct { thing: empty_map };
     test_de(yaml, &expected);
 }
 

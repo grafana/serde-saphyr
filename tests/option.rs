@@ -1,5 +1,6 @@
-use serde::de::Deserializer;
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 use serde::Deserialize;
+use serde::de::Deserializer;
 
 #[derive(Debug, Deserialize, PartialEq)]
 struct OptTest {
@@ -51,6 +52,18 @@ struct OptStringTest {
 struct NestedOptString {
     plain: Option<Option<String>>,
     quoted: Option<Option<String>>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct AnchoredQuotedEmptyStrings {
+    single_string: String,
+    single_option: Option<String>,
+    single_alias_string: String,
+    single_alias_option: Option<String>,
+    double_string: String,
+    double_option: Option<String>,
+    double_alias_string: String,
+    double_alias_option: Option<String>,
 }
 
 #[test]
@@ -120,12 +133,38 @@ single_vec: ''\n";
 }
 
 #[test]
+fn anchored_quoted_empty_strings_are_strings() {
+    let yaml = "\
+single_string: &single_string ''\n\
+single_option: &single_option ''\n\
+single_alias_string: *single_string\n\
+single_alias_option: *single_option\n\
+double_string: &double_string \"\"\n\
+double_option: &double_option \"\"\n\
+double_alias_string: *double_string\n\
+double_alias_option: *double_option\n";
+    let parsed: AnchoredQuotedEmptyStrings = serde_saphyr::from_str(yaml).unwrap();
+
+    assert_eq!(parsed.single_string, "");
+    assert_eq!(parsed.single_option.as_deref(), Some(""));
+    assert_eq!(parsed.single_alias_string, "");
+    assert_eq!(parsed.single_alias_option.as_deref(), Some(""));
+    assert_eq!(parsed.double_string, "");
+    assert_eq!(parsed.double_option.as_deref(), Some(""));
+    assert_eq!(parsed.double_alias_string, "");
+    assert_eq!(parsed.double_alias_option.as_deref(), Some(""));
+}
+
+#[test]
 fn unit_fields_reject_quoted_empty_strings() {
     for yaml in ["unit: \"\"", "unit: ''"] {
         let err = serde_saphyr::from_str::<UnitHolder>(yaml).unwrap_err();
         assert!(
-            err.to_string().contains("unexpected value for unit"),
-            "yaml: {yaml}, err: {err}"
+            matches!(
+                err.without_snippet(),
+                serde_saphyr::Error::UnexpectedValueForUnit { .. }
+            ),
+            "yaml: {yaml}, err: {err:?}"
         );
     }
 }
@@ -135,8 +174,11 @@ fn unit_struct_fields_reject_quoted_empty_strings() {
     for yaml in ["unit: \"\"", "unit: ''"] {
         let err = serde_saphyr::from_str::<UnitStructHolder>(yaml).unwrap_err();
         assert!(
-            err.to_string().contains("unexpected value for unit"),
-            "yaml: {yaml}, err: {err}"
+            matches!(
+                err.without_snippet(),
+                serde_saphyr::Error::UnexpectedValueForUnit { .. }
+            ),
+            "yaml: {yaml}, err: {err:?}"
         );
     }
 }

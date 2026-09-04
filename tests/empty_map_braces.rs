@@ -1,17 +1,12 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
-use serde_saphyr::SerializerOptions;
 
 #[test]
-fn empty_top_level_map_braces_with_option() {
+fn empty_top_level_map_braces_by_default() {
     let map: HashMap<String, String> = HashMap::new();
-    let opts = SerializerOptions {
-        empty_map_as_braces: true,
-        ..Default::default()
-    };
-    let mut s = String::new();
-    serde_saphyr::to_fmt_writer_with_options(&mut s, &map, opts).unwrap();
+    let s = serde_saphyr::to_string(&map).unwrap();
     assert_eq!(s, "{}\n");
 }
 
@@ -21,14 +16,9 @@ struct WrapMap {
 }
 
 #[test]
-fn empty_map_value_braces_with_option() {
+fn empty_map_value_braces_by_default() {
     let v = WrapMap { m: BTreeMap::new() };
-    let opts = SerializerOptions {
-        empty_map_as_braces: true,
-        ..Default::default()
-    };
-    let mut s = String::new();
-    serde_saphyr::to_fmt_writer_with_options(&mut s, &v, opts).unwrap();
+    let s = serde_saphyr::to_string(&v).unwrap();
     assert!(
         s.contains("m: {}\n") || s.ends_with("m: {}\n"),
         "yaml: {}",
@@ -39,24 +29,14 @@ fn empty_map_value_braces_with_option() {
 #[test]
 fn struct_with_empty_map_renders_exact() {
     let v = WrapMap { m: BTreeMap::new() };
-
-    // With empty_map_as_braces: true
-    let opts = SerializerOptions {
-        empty_map_as_braces: true,
-        ..Default::default()
-    };
-    let mut s = String::new();
-    serde_saphyr::to_fmt_writer_with_options(&mut s, &v, opts).unwrap();
+    let s = serde_saphyr::to_string(&v).unwrap();
     assert_eq!(s, "m: {}\n");
 
-    // With empty_map_as_braces: false (legacy behavior)
-    let opts_legacy = SerializerOptions {
-        empty_map_as_braces: false,
-        ..Default::default()
-    };
-    let mut s_legacy = String::new();
-    serde_saphyr::to_fmt_writer_with_options(&mut s_legacy, &v, opts_legacy).unwrap();
-    assert_eq!(s_legacy, "m:\n\n");
+    let options = serde_saphyr::ser_options! { empty_as_braces: false };
+
+    let mut s: String = String::new();
+    serde_saphyr::to_fmt_writer_with_options(&mut s, &v, options).unwrap();
+    assert_eq!(s, "m:\n\n");
 }
 
 #[test]
@@ -72,21 +52,14 @@ fn test_struct_empty_and_not() {
         non_empty: HashMap::from([("is".to_string(), 7)]),
     };
 
-    // With empty_map_as_braces: true
-    let opts = SerializerOptions {
-        empty_map_as_braces: true,
-        ..Default::default()
-    };
-    let mut yaml = String::new();
-    serde_saphyr::to_fmt_writer_with_options(&mut yaml, &o, opts).unwrap();
+    let yaml = serde_saphyr::to_string(&o).unwrap();
     let expected = r#"empty: {}
 non_empty:
   is: 7
 "#;
     assert_eq!(yaml, expected);
 
-    let mut opts = SerializerOptions::default();
-    opts.empty_map_as_braces = false;
+    let opts = serde_saphyr::ser_options! { empty_as_braces: false };
     let yaml_legacy = {
         let mut out = String::new();
         serde_saphyr::to_fmt_writer_with_options(&mut out, &o, opts).unwrap();
@@ -97,14 +70,16 @@ non_empty:
     assert_eq!(legacy_expected, yaml_legacy);
 
     // Round trip test
-    let or1: OneOne = serde_saphyr::from_str(&yaml).unwrap();
+    let or1: OneOne = serde_saphyr::from_str(yaml.as_str()).unwrap();
     let or2: OneOne = serde_saphyr::from_str(yaml_legacy.as_str()).unwrap();
 
     assert_eq!(or1, o);
     assert_eq!(or2, o);
 
-    opts.indent_step = 3;
-    opts.empty_map_as_braces = true;
+    let opts = serde_saphyr::ser_options! {
+        indent_step: 3,
+        empty_as_braces: true,
+    };
     let yaml = {
         let mut out = String::new();
         serde_saphyr::to_fmt_writer_with_options(&mut out, &o, opts).unwrap();
@@ -118,7 +93,10 @@ non_empty:
 "#;
     assert_eq!(yaml, expected);
 
-    opts.empty_map_as_braces = false;
+    let opts = serde_saphyr::ser_options! {
+        indent_step: 3,
+        empty_as_braces: false,
+    };
     let yaml_legacy = {
         let mut out = String::new();
         serde_saphyr::to_fmt_writer_with_options(&mut out, &o, opts).unwrap();
@@ -134,10 +112,11 @@ non_empty:
 fn struct_with_non_empty_map_renders_block_mapping() {
     let mut m = BTreeMap::new();
     m.insert("x".to_string(), "foo".to_string());
-    m.insert("y".to_string(), "bar".to_string());
+    // Avoid YAML 1.1 boolean-like plain scalars as keys (e.g. "y"), which are now quoted.
+    m.insert("xy".to_string(), "bar".to_string());
     let v = WrapMap { m };
     let s = serde_saphyr::to_string(&v).unwrap();
-    let expected = "m:\n  x: foo\n  y: bar\n";
+    let expected = "m:\n  x: foo\n  xy: bar\n";
     assert_eq!(s, expected, "yaml: {}", s);
 }
 
@@ -147,16 +126,11 @@ struct WrapSeq {
 }
 
 #[test]
-fn empty_map_in_sequence_braces_with_option() {
+fn empty_map_in_sequence_braces_by_default() {
     let v = WrapSeq {
         v: vec![BTreeMap::new()],
     };
-    let opts = SerializerOptions {
-        empty_map_as_braces: true,
-        ..Default::default()
-    };
-    let mut s = String::new();
-    serde_saphyr::to_fmt_writer_with_options(&mut s, &v, opts).unwrap();
+    let s = serde_saphyr::to_string(&v).unwrap();
     // Allow either "- {}" or inline after key with potential spaces/newline nuances.
     assert!(s.contains("- {}\n") || s.ends_with("- {}\n"), "yaml: {}", s);
 }
@@ -166,8 +140,7 @@ fn disable_empty_map_as_braces_restores_legacy() {
     // When disabled, an empty map in block position should not render braces. We test a map value
     // position where previously an empty body produced just a newline after the key.
     let v = WrapMap { m: BTreeMap::new() };
-    let mut opts = SerializerOptions::default();
-    opts.empty_map_as_braces = false;
+    let opts = serde_saphyr::ser_options! { empty_as_braces: false };
     let s = {
         let mut out = String::new();
         serde_saphyr::to_fmt_writer_with_options(&mut out, &v, opts).unwrap();

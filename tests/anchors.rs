@@ -1,4 +1,6 @@
-#[cfg(test)]
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
+pub mod select_enum_with_tags;
+
 mod tests {
     use serde::Deserialize;
 
@@ -51,7 +53,7 @@ seq:
     // ---------------------------------------------------------------------
     use indoc::indoc;
     use serde::Serialize;
-    use serde_saphyr::{from_str, to_string, ArcAnchor, RcAnchor, RcWeakAnchor};
+    use serde_saphyr::{ArcAnchor, RcAnchor, RcWeakAnchor, from_str, to_string};
     use std::rc::Rc;
     use std::sync::Arc;
 
@@ -60,18 +62,40 @@ seq:
         name: String,
     }
 
+    #[derive(Debug, PartialEq)]
+    struct NestedParseDuringDeserialize {
+        value: i32,
+    }
+
+    impl<'de> Deserialize<'de> for NestedParseDuringDeserialize {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            #[derive(Deserialize)]
+            struct Raw {
+                value: i32,
+            }
+
+            let _: Vec<i32> =
+                serde_saphyr::from_str("- 1\n- 2\n").map_err(serde::de::Error::custom)?;
+            let raw = Raw::deserialize(deserializer)?;
+            Ok(Self { value: raw.value })
+        }
+    }
+
     #[test]
     fn anchor_assign() {
         let _anchor: RcAnchor<Node> = Rc::new(Node {
-            name: "".to_string(),
+            name: String::new(),
         })
         .into();
 
         let nrc = Rc::new(Node {
-            name: "".to_string(),
+            name: String::new(),
         });
 
-        let _anchor: RcWeakAnchor<Node> = nrc.into();
+        let _anchor: RcWeakAnchor<Node> = (&nrc).into();
     }
 
     #[test]
@@ -88,6 +112,36 @@ seq:
             - *a1
         "#};
         assert_eq!(yaml, expected, "RcAnchor seq YAML mismatch. Got:\n{}", yaml);
+    }
+
+    #[test]
+    fn block_seq_anchor_payload_in_sequence_indents_under_dash() {
+        #[derive(Serialize)]
+        struct Tup(u8, u8);
+
+        let shared = Rc::new(Tup(1, 2));
+        let tup_data: Vec<RcAnchor<Tup>> = vec![RcAnchor(shared.clone()), RcAnchor(shared)];
+
+        let expected = indoc! {r#"
+            - &a1
+              - 1
+              - 2
+            - *a1
+        "#};
+
+        let tup_yaml = to_string(&tup_data).expect("serialize tuple-struct anchor sequence");
+        assert_eq!(
+            tup_yaml, expected,
+            "tuple-struct payload. Got:\n{}",
+            tup_yaml
+        );
+
+        let shared_vec = Rc::new(vec![1u8, 2]);
+        let vec_data: Vec<RcAnchor<Vec<u8>>> =
+            vec![RcAnchor(shared_vec.clone()), RcAnchor(shared_vec)];
+
+        let vec_yaml = to_string(&vec_data).expect("serialize Vec anchor sequence");
+        assert_eq!(vec_yaml, expected, "Vec payload. Got:\n{}", vec_yaml);
     }
 
     #[test]
@@ -138,6 +192,27 @@ seq:
     }
 
     #[test]
+    fn nested_parse_inside_rc_anchor_value_preserves_outer_anchor_scope() {
+        #[derive(Deserialize)]
+        struct Doc {
+            a: RcAnchor<NestedParseDuringDeserialize>,
+            b: RcAnchor<NestedParseDuringDeserialize>,
+        }
+
+        let y = indoc! {r#"
+            a: &A
+              value: 11
+            b: *A
+        "#};
+
+        let doc: Doc = from_str(y).expect("nested parse inside RcAnchor should deserialize");
+
+        assert_eq!(doc.a.value, 11);
+        assert_eq!(doc.b.value, 11);
+        assert!(Rc::ptr_eq(&doc.a.0, &doc.b.0));
+    }
+
+    #[test]
     fn deserialize_arc_anchor_strong_with_alias_identity() {
         #[derive(Deserialize)]
         struct Doc {
@@ -155,6 +230,26 @@ seq:
         assert!(Arc::ptr_eq(&doc.a.0, &doc.b.0)); // same object
     }
 
+    #[test]
+    fn nested_parse_inside_arc_anchor_value_preserves_outer_anchor_scope() {
+        #[derive(Deserialize)]
+        struct Doc {
+            a: ArcAnchor<NestedParseDuringDeserialize>,
+            b: ArcAnchor<NestedParseDuringDeserialize>,
+        }
+
+        let y = indoc! {r#"
+            a: &A
+              value: 13
+            b: *A
+        "#};
+
+        let doc: Doc = from_str(y).expect("nested parse inside ArcAnchor should deserialize");
+
+        assert_eq!(doc.a.value, 13);
+        assert_eq!(doc.b.value, 13);
+        assert!(Arc::ptr_eq(&doc.a.0, &doc.b.0));
+    }
 
     #[test]
     fn anchor_struct_deserialize() -> anyhow::Result<()> {
@@ -185,15 +280,17 @@ seq:
         };
 
         let serialized = serde_saphyr::to_string(&data)?;
-        assert_eq!(serialized, String::from(
-            indoc! {
+        assert_eq!(
+            serialized,
+            String::from(indoc! {
             r#"primary_a: &a1
                   name: primary_a
                 doc:
                   a: *a1
                   b: &a2
                     name: the_b
-            "#}));
+            "#})
+        );
 
         let deserialized: Bigger = serde_saphyr::from_str(&serialized)?;
 
@@ -204,4 +301,202 @@ seq:
         Ok(())
     }
 
+    #[test]
+    fn rc_anchor_flatten_repro_issue_106_does_not_reuse_outer_anchor_as_inner() {
+        #[derive(Deserialize, Debug)]
+        struct Inner {
+            foo: i32,
+            bar: i32,
+        }
+
+        type InnerRc = RcAnchor<Inner>;
+
+        #[derive(Deserialize, Debug)]
+        struct Outer {
+            name: String,
+            #[serde(flatten)]
+            action: OuterAction,
+        }
+
+        #[derive(Deserialize, Debug)]
+        enum OuterAction {
+            #[serde(rename = "link")]
+            Link { inner: InnerRc },
+        }
+
+        type OuterRc = RcAnchor<Outer>;
+
+        #[derive(Deserialize, Debug)]
+        struct Nested {
+            name: String,
+            xyz: OuterRc,
+        }
+
+        #[derive(Deserialize, Debug)]
+        struct File {
+            inners: Vec<InnerRc>,
+            outers: Vec<OuterRc>,
+            nested: Vec<Nested>,
+        }
+
+        let yaml = indoc! {r#"
+            inners:
+            - &one
+              foo: 17
+              bar: 18
+
+            outers:
+            - &two
+              name: one
+              link: { inner: *one }
+
+            nested:
+            - name: wtf
+              xyz: *two
+        "#};
+
+        let file: File = from_str(yaml).expect("issue #106 repro should deserialize");
+
+        assert!(
+            Rc::ptr_eq(&file.outers[0].0, &file.nested[0].xyz.0),
+            "outer alias *two should preserve RcAnchor<Outer> identity"
+        );
+        assert_eq!(file.outers[0].name, "one");
+        assert_eq!(file.nested[0].name, "wtf");
+        assert_eq!(file.inners[0].foo, 17);
+        assert_eq!(file.inners[0].bar, 18);
+
+        let outer_inner = match &file.outers[0].action {
+            OuterAction::Link { inner } => inner,
+        };
+
+        assert_eq!(outer_inner.foo, 17);
+        assert_eq!(outer_inner.bar, 18);
+    }
+
+    #[test]
+    fn rc_anchor_flatten_nested_empty_deserializes_without_outer_context_leak() {
+        #[derive(Deserialize, Debug)]
+        struct Inner {
+            foo: i32,
+            bar: i32,
+        }
+
+        type InnerRc = RcAnchor<Inner>;
+
+        #[derive(Deserialize, Debug)]
+        struct Outer {
+            #[serde(flatten)]
+            action: OuterAction,
+        }
+
+        #[derive(Deserialize, Debug)]
+        enum OuterAction {
+            #[serde(rename = "link")]
+            Link { inner: InnerRc },
+        }
+
+        type OuterRc = RcAnchor<Outer>;
+
+        #[derive(Deserialize, Debug)]
+        struct File {
+            inners: Vec<InnerRc>,
+            outers: Vec<OuterRc>,
+            nested: Vec<()>,
+        }
+
+        let yaml = indoc! {r#"
+            inners:
+            - &one
+              foo: 17
+              bar: 18
+
+            outers:
+            - &two
+              link: { inner: *one }
+
+            nested: []
+        "#};
+
+        let file: File = from_str(yaml).expect("nested: [] variant should deserialize");
+
+        assert!(file.nested.is_empty());
+        assert_eq!(file.inners[0].foo, 17);
+        assert_eq!(file.inners[0].bar, 18);
+
+        let outer_inner = match &file.outers[0].action {
+            OuterAction::Link { inner } => inner,
+        };
+
+        assert_eq!(outer_inner.foo, 17);
+        assert_eq!(outer_inner.bar, 18);
+    }
+
+    #[test]
+    // We cannot fix this due to a limitation in Serde's `#[serde(flatten)]`.
+    // Serde buffers flattened fields into a typeless `Content` enum using a private `FlatMapDeserializer`.
+    // During this buffering phase, format-specific deserialization context—such as the currently active
+    // anchor IDs in `serde-saphyr`—is discarded. When `RcAnchor` is later deserialized from the buffered
+    // `Content`, it fails to see the original anchor context and creates a new allocation instead of
+    // preserving pointer identity.
+    #[ignore = "requires preserving YAML alias metadata through serde flatten buffering"]
+    fn rc_anchor_flatten_nested_empty_should_preserve_inner_identity() {
+        #[derive(Deserialize, Debug)]
+        struct Inner {
+            foo: i32,
+            bar: i32,
+        }
+
+        type InnerRc = RcAnchor<Inner>;
+
+        #[derive(Deserialize, Debug)]
+        struct Outer {
+            #[serde(flatten)]
+            action: OuterAction,
+        }
+
+        #[derive(Deserialize, Debug)]
+        enum OuterAction {
+            #[serde(rename = "link")]
+            Link { inner: InnerRc },
+        }
+
+        type OuterRc = RcAnchor<Outer>;
+
+        #[derive(Deserialize, Debug)]
+        struct File {
+            inners: Vec<InnerRc>,
+            outers: Vec<OuterRc>,
+            nested: Vec<()>,
+        }
+
+        let yaml = indoc! {r#"
+            inners:
+            - &one
+              foo: 17
+              bar: 18
+
+            outers:
+            - &two
+              link: { inner: *one }
+
+            nested: []
+        "#};
+
+        let file: File = from_str(yaml).expect("nested: [] variant should deserialize");
+        assert!(file.nested.is_empty());
+        assert_eq!(file.inners[0].foo, 17);
+        assert_eq!(file.inners[0].bar, 18);
+
+        let outer_inner = match &file.outers[0].action {
+            OuterAction::Link { inner } => inner,
+        };
+        assert_eq!(outer_inner.foo, 17);
+        assert_eq!(outer_inner.bar, 18);
+
+        assert!(
+            Rc::ptr_eq(&file.inners[0].0, &outer_inner.0),
+            "inner alias *one inside flattened enum should preserve RcAnchor<Inner> identity"
+        );
+    }
 }

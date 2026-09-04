@@ -13,26 +13,27 @@ fn test_yaml_malformed() {
     #[derive(Debug, Deserialize)]
     #[allow(dead_code)]
     struct TestStruct {
-        x: String
+        x: String,
     }
 
     let yaml_input = "\n    x {\n        ";
 
     let result: Result<TestStruct, _> = serde_saphyr::from_str(yaml_input);
-    println!("{result:?}");
 
     // Confirm parsing yields an error, and does not panic or succeed.
-    assert!(result.is_err(), "Parsing invalid YAML should fail with an error, not succeed.");
+    assert!(
+        result.is_err(),
+        "Parsing invalid YAML should fail with an error, not succeed."
+    );
 }
 
 #[test]
-fn test_lexer_errors() {
+fn test_zero_indented_root_folded_scalar() {
     let yaml_input = ">\n@ !";
-    let result: Result<serde_json::Value, _> = serde_saphyr::from_str(yaml_input);
+    let result: serde_json::Value =
+        serde_saphyr::from_str(yaml_input).expect("Root folded scalar should deserialize");
 
-    // The YAML input is invalid, so expect an Err, but no panic
-    println!("{result:?}");
-    assert!(result.is_err(), "Parsing invalid YAML should return an error, not panic.");
+    assert_eq!(result, serde_json::Value::String("@ !\n".to_string()));
 }
 
 #[test]
@@ -40,7 +41,6 @@ fn test_folded_scalar_with_indented_content() {
     let yaml_input = ">\n  @ !";
     let result: Result<serde_json::Value, _> = serde_saphyr::from_str(yaml_input);
 
-    println!("{result:?}");
     let value = result.expect("Indented folded scalar should deserialize successfully");
     assert_eq!(value, serde_json::Value::String("@ !\n".to_string()));
 }
@@ -49,28 +49,40 @@ fn test_folded_scalar_with_indented_content() {
 fn test_unmatched_brackets() {
     let yaml_input = "{key: [value1, value2";
     let result: Result<serde_json::Value, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Unmatched brackets should yield an error without panic.");
+    assert!(
+        result.is_err(),
+        "Unmatched brackets should yield an error without panic."
+    );
 }
 
 #[test]
 fn test_invalid_escape_sequence() {
     let yaml_input = r#"key: "Invalid\xEscape""#;
     let result: Result<serde_json::Value, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Invalid escape sequences should yield an error without panic.");
+    assert!(
+        result.is_err(),
+        "Invalid escape sequences should yield an error without panic."
+    );
 }
 
 #[test]
 fn test_invalid_boolean_tagged() {
     let yaml_input = "key: !!bool truue";
     let result: Result<serde_json::Value, _> = serde_saphyr::from_str(yaml_input);
-    assert!(result.is_err(), "Tagged invalid boolean should yield an error without panic.");
+    assert!(
+        result.is_err(),
+        "Tagged invalid boolean should yield an error without panic."
+    );
 }
 
 #[test]
 fn test_deeply_nested_structures() {
     let yaml_input = format!("{}{}", "[".repeat(10_000), "]".repeat(10_000));
     let result: Result<serde_json::Value, _> = serde_saphyr::from_str(&yaml_input);
-    assert!(result.is_err(), "Deeply nested structures should gracefully return an error.");
+    assert!(
+        result.is_err(),
+        "Deeply nested structures should gracefully return an error."
+    );
 }
 
 #[test]
@@ -113,7 +125,6 @@ fn test_multiline_array() {
         multiline_array: Vec<String>,
     }
 
-    // Both formats are now accepted by saphyr parser
     let yaml_input = r#"
         multiline_array: [
           'item'
@@ -121,7 +132,10 @@ fn test_multiline_array() {
     "#;
 
     let parsed: Result<Data, Error> = serde_saphyr::from_str(yaml_input);
-    assert!(parsed.is_ok(), "Multiline array should parse successfully.");
+    assert!(
+        parsed.is_ok(),
+        "Multiline array with offset ] should now be ok."
+    );
 
     let correct_yaml_input = r#"
         multiline_array: [

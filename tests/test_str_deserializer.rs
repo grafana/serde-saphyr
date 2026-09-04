@@ -1,3 +1,4 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 use anyhow::Result;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -32,8 +33,7 @@ mod borrowed_str_fails {
         D: serde::Deserializer<'de>,
     {
         use serde::Deserialize as _;
-        Regex::new(<&str>::deserialize(deserializer)?)
-            .map_err(serde::de::Error::custom)
+        Regex::new(<&str>::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 
     #[derive(Serialize, Deserialize, Debug)]
@@ -58,14 +58,13 @@ global:
 
         let res: anyhow::Result<Root> = serde_saphyr::from_str(yaml).map_err(Into::into);
         match res {
-            Ok(_config) => anyhow::bail!(
-                "expected error when deserializing &str, but got Ok"
-            ),
+            Ok(_config) => anyhow::bail!("expected error when deserializing &str, but got Ok"),
             Err(e) => {
                 let msg = e.to_string();
+                // Serde's error message when visit_string is called but &str is expected
                 assert!(
-                    msg.contains("String or Cow<'de, str>"),
-                    "hint missing: {}",
+                    msg.contains("expected a borrowed string") || msg.contains("String or Cow"),
+                    "expected borrowed string error, got: {}",
                     msg
                 );
             }

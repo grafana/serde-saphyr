@@ -1,4 +1,7 @@
-use serde_saphyr::budget::{Budget, BudgetBreach, check_yaml_budget, EnforcingPolicy};
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
+use std::fmt::Write as _;
+
+use serde_saphyr::budget::{Budget, BudgetBreach, EnforcingPolicy, check_yaml_budget};
 
 fn billion_laughs_yaml(levels: usize, fan_out: usize) -> String {
     assert!(levels > 0, "need at least one level");
@@ -7,16 +10,16 @@ fn billion_laughs_yaml(levels: usize, fan_out: usize) -> String {
     let mut yaml = String::new();
     yaml.push_str("l0: &L0 [\"LOL\", \"LOL\"]\n");
     for level in 1..=levels {
-        yaml.push_str(&format!("l{level}: &L{level} ["));
+        let _ = write!(yaml, "l{level}: &L{level} [");
         for idx in 0..fan_out {
             if idx > 0 {
                 yaml.push_str(", ");
             }
-            yaml.push_str(&format!("*L{}", level - 1));
+            let _ = write!(yaml, "*L{}", level - 1);
         }
         yaml.push_str("]\n");
     }
-    yaml.push_str(&format!("root: *L{levels}\n"));
+    let _ = writeln!(yaml, "root: *L{levels}");
     yaml
 }
 
@@ -24,7 +27,7 @@ fn document_storm_yaml(count: usize) -> String {
     let mut yaml = String::new();
     for idx in 0..count {
         yaml.push_str("--- \"");
-        yaml.push_str(&format!("doc{idx}"));
+        let _ = write!(yaml, "doc{idx}");
         yaml.push_str("\"\n");
     }
     yaml
@@ -121,7 +124,7 @@ fn baseline_valid_config_parses() {
 }
 
 /// 1) Custom execution-capable tags (e.g., Python/Ruby) must be rejected.
-/// Here we attempt to feed `!!python/object/apply:os.system` into `user`.
+///    Here we attempt to feed `!!python/object/apply:os.system` into `user`.
 #[test]
 fn rejects_custom_exec_tag_on_user() {
     let yaml = r#"
@@ -156,7 +159,7 @@ user: !include "/etc/passwd"
 }
 
 /// 3) Self-referential alias (recursive anchor) should error instead of recursing indefinitely.
-/// This is a safe, tiny "billion-laughs"-style check that does not allocate huge memory.
+///    This is a safe, tiny "billion-laughs"-style check that does not allocate huge memory.
 #[test]
 fn rejects_self_referential_alias_in_sequence() {
     // Note: we use the "Loose" struct to keep focus on alias recursion rather than unknown fields.
@@ -194,15 +197,13 @@ key: !!binary |
 user: []
 "#;
     let err = serde_saphyr::from_str::<ServerStrict>(yaml).expect_err("multi-doc must fail");
-    match err {
-        serde_saphyr::Error::Message { msg, .. } => {
-            assert!(
-                msg.contains("from_multiple"),
-                "error should point users to from_multiple, got: {msg}"
-            );
+    assert!(matches!(
+        err.without_snippet(),
+        serde_saphyr::Error::MultipleDocuments {
+            hint: "use from_multiple or from_multiple_with_options",
+            ..
         }
-        other => panic!("unexpected error variant: {:?}", other),
-    }
+    ));
 }
 
 /// 5) Invalid base64 in `!!binary` must be rejected, preventing garbage in byte vectors.
@@ -329,7 +330,7 @@ user: []
 }
 
 /// 10) Merge-key injection (`<<`) must not silently introduce unknown fields in strict mode.
-/// This test passes whether the loader expands YAML merges or treats `<<` as a literal key:
+///     This test passes whether the loader expands YAML merges or treats `<<` as a literal key:
 /// - If merges are supported: `extra` becomes a real top-level key -> denied by `deny_unknown_fields`.
 /// - If not: `<<` itself is an unknown key -> also denied by `deny_unknown_fields`.
 #[test]
@@ -352,7 +353,7 @@ user: []
 }
 
 /// 11) Control: safe anchor reuse for repeated objects should still work and remain small.
-/// This demonstrates legitimate anchors are fine (not an attack), and keeps expansion bounded.
+///     This demonstrates legitimate anchors are fine (not an attack), and keeps expansion bounded.
 #[test]
 fn alias_reuse_for_repeated_users_is_ok() {
     let yaml = r#"

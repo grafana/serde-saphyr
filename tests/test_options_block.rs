@@ -1,34 +1,28 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
+use serde::Deserialize;
 use serde_saphyr::{
-    to_fmt_writer_with_options, FoldStr, FoldString, LitStr, LitString, SerializerOptions,
+    FoldStr, FoldString, LitStr, LitString, to_fmt_writer_with_options, to_string_with_options,
 };
 
 #[test]
 fn lit_wrappers_respect_min_fold_chars_option() {
     // Default: threshold 32, so a short single-line becomes plain scalar.
     let mut s = String::new();
-    to_fmt_writer_with_options(&mut s, &LitStr("short"), SerializerOptions::default()).unwrap();
+    to_fmt_writer_with_options(&mut s, &LitStr("short"), serde_saphyr::ser_options! {}).unwrap();
     assert_eq!(s, "|-\n  short\n");
 
-    // With min_fold_chars = 0, even a short single-line should use block style.
-    // String doesn't end with \n, so use strip indicator (|-)
-    let opts = SerializerOptions {
-        min_fold_chars: 0,
-        ..SerializerOptions::default()
-    };
+    // With min_fold_chars = 0, even a short single-line should use block style `|`.
+    let opts = serde_saphyr::ser_options! { min_fold_chars: 0 };
     s.clear();
     to_fmt_writer_with_options(&mut s, &LitStr("short"), opts).unwrap();
     assert_eq!(s, "|-\n  short\n");
 
     // Newlines always force block style regardless of threshold.
-    // String doesn't end with \n, so use strip indicator (|-)
     s.clear();
     to_fmt_writer_with_options(
         &mut s,
         &LitStr("a\nb"),
-        SerializerOptions {
-            min_fold_chars: usize::MAX,
-            ..Default::default()
-        },
+        serde_saphyr::ser_options! { min_fold_chars: usize::MAX },
     )
     .unwrap();
     assert_eq!(s, "|-\n  a\n  b\n");
@@ -36,12 +30,8 @@ fn lit_wrappers_respect_min_fold_chars_option() {
 
 #[test]
 fn lit_owned_variant_also_respects_option() {
-    // String doesn't end with \n, so use strip indicator (|-)
     let mut s = String::new();
-    let opts = SerializerOptions {
-        min_fold_chars: 0,
-        ..SerializerOptions::default()
-    };
+    let opts = serde_saphyr::ser_options! { min_fold_chars: 0 };
     to_fmt_writer_with_options(&mut s, &LitString("ok".to_string()), opts).unwrap();
     assert_eq!(s, "|-\n  ok\n");
 }
@@ -49,10 +39,9 @@ fn lit_owned_variant_also_respects_option() {
 #[test]
 fn fold_wrapping_uses_configured_column() {
     // Configure very small wrap to make behavior easy to assert
-    let opts = SerializerOptions {
+    let opts = serde_saphyr::ser_options! {
         folded_wrap_chars: 10,
         min_fold_chars: 0,
-        ..SerializerOptions::default()
     };
 
     // A single long line without newlines should still go to block style because min_fold_chars=0
@@ -75,10 +64,9 @@ fn fold_wrapping_uses_configured_column() {
 
 #[test]
 fn fold_owned_variant_respects_wrap() {
-    let opts = SerializerOptions {
+    let opts = serde_saphyr::ser_options! {
         folded_wrap_chars: 12,
         min_fold_chars: 0,
-        ..SerializerOptions::default()
     };
     let mut out = String::new();
     to_fmt_writer_with_options(
@@ -90,4 +78,35 @@ fn fold_owned_variant_respects_wrap() {
     // Basic sanity: header + at least two lines due to wrap <=12
     assert!(out.starts_with(">\n  "));
     assert!(out.lines().count() >= 3);
+}
+
+#[test]
+fn foldstr_sequence_under_map_key() {
+    let opts = serde_saphyr::ser_options! { min_fold_chars: 0, compact_list_indent: false };
+
+    #[derive(serde::Serialize)]
+    struct Doc<'a> {
+        items: Vec<FoldStr<'a>>,
+    }
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct DocOwned {
+        items: Vec<String>,
+    }
+    let d = Doc {
+        items: vec![FoldStr("a"), FoldStr("b"), FoldStr("c")],
+    };
+    let out = to_string_with_options(&d, opts).unwrap();
+    assert_eq!(out, "items:\n  - >\n    a\n  - >\n    b\n  - >\n    c\n");
+
+    let compact_opts = serde_saphyr::ser_options! {
+        min_fold_chars: 0,
+        compact_list_indent: true,
+    };
+    let compact_out = to_string_with_options(&d, compact_opts).unwrap();
+    assert_eq!(compact_out, "items:\n- >\n  a\n- >\n  b\n- >\n  c\n");
+    let parsed: DocOwned = serde_saphyr::from_str(&compact_out).unwrap();
+    assert_eq!(
+        parsed.items,
+        vec!["a\n".to_string(), "b\n".to_string(), "c\n".to_string()]
+    );
 }

@@ -10,15 +10,10 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde = { version = "1.0.218", features = ["derive"] }
+arbitrary = "1"
 [dependencies.serde-saphyr]
 path = ".."
-
-[[bin]]
-name = "slice_and_reader"
-path = "fuzz_targets/slice_and_reader.rs"
-test = false
-doc = false
-bench = false
+features = ["properties"]
 
 [[bin]]
 name = "aliases_merges"
@@ -48,3 +43,23 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "raw_deserialize"
+path = "fuzz_targets/raw_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "serialize"
+path = "fuzz_targets/serialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "properties"
+path = "fuzz_targets/properties.rs"
+test = false
+doc = false
+bench = false

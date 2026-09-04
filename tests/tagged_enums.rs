@@ -1,3 +1,6 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
+#![allow(clippy::upper_case_acronyms)]
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -23,10 +26,14 @@ enum Shape {
 fn tagged_enum_with_wrong_type_errors() {
     let yaml = "!!Color GREEN";
     let err = serde_saphyr::from_str::<Shape>(yaml).expect_err("expected a type mismatch");
-    assert!(
-        err.to_string()
-            .contains("tagged enum `Color` does not match target enum `Shape`")
-    );
+    assert!(matches!(
+        err.without_snippet(),
+        serde_saphyr::Error::TaggedEnumMismatch {
+            tagged,
+            target: "Shape",
+            ..
+        } if tagged == "Color"
+    ));
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -45,9 +52,8 @@ fn unit_variant_serializes_plain_by_default() {
 #[test]
 fn unit_variant_serializes_tagged_when_enabled() {
     let mut out = String::new();
-    let opts = serde_saphyr::SerializerOptions {
+    let opts = serde_saphyr::ser_options! {
         tagged_enums: true,
-        ..serde_saphyr::SerializerOptions::default()
     };
     serde_saphyr::to_fmt_writer_with_options(&mut out, &Simple::VALUE, opts)
         .expect("failed to serialize tagged enum variant");
@@ -63,9 +69,8 @@ fn struct_with_enum() -> anyhow::Result<()> {
         area: usize,
     }
 
-    let mut opts = serde_saphyr::SerializerOptions {
+    let mut opts = serde_saphyr::ser_options! {
         tagged_enums: true,
-        ..serde_saphyr::SerializerOptions::default()
     };
 
     let mut yaml = String::new();
@@ -75,13 +80,17 @@ fn struct_with_enum() -> anyhow::Result<()> {
         area: 51,
     };
     serde_saphyr::to_fmt_writer_with_options(&mut yaml, &s, opts)?;
-    assert_eq!("shape: !!Shape SQUARE\ncolor: !!Color GREEN\narea: 51\n", yaml);
-    println!("yaml: {:#?}", yaml);
+    assert_eq!(
+        "shape: !!Shape SQUARE\ncolor: !!Color GREEN\narea: 51\n",
+        yaml
+    );
     let d: MyStruct = serde_saphyr::from_str(&yaml)?;
     assert_eq!(d, s);
     yaml.clear();
 
-    opts.tagged_enums = false;
+    opts = serde_saphyr::ser_options! {
+        tagged_enums: false,
+    };
     serde_saphyr::to_fmt_writer_with_options(&mut yaml, &s, opts)?;
     assert_eq!("shape: SQUARE\ncolor: GREEN\narea: 51\n", yaml);
     let d: MyStruct = serde_saphyr::from_str(&yaml)?;

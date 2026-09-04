@@ -1,5 +1,5 @@
-// Put this in any Rust source file in your crate. It converts your snippet into a unit test
-// that parses the YAML and prints both the debug view and the serialized output.
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
+// Converts a YAML snippet into a unit test that parses and re-serializes the structure.
 
 use serde_json::Value;
 
@@ -15,7 +15,6 @@ const DATA: &str = r#"
   groups: [all]
 "#;
 
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -23,7 +22,8 @@ mod tests {
     fn prints_serialized_structure() {
         /// Asserts that the lines containing `aligned_a`, `aligned_b`, and `aligned_c`
         /// all start at the same indentation (same number of leading whitespace chars)
-        fn aligned_keys_have_same_indentation(data: &String) {
+        #[track_caller]
+        fn aligned_keys_have_same_indentation(data: &str) {
             let find_indent_for = |key: &str| -> (usize, usize) {
                 data.lines()
                     .enumerate()
@@ -67,12 +67,9 @@ mod tests {
         }
 
         let v: Value = serde_saphyr::from_str(DATA).expect("YAML should parse into JSON Value");
-        // Pretty debug view of the parsed structure:
-        //eprintln!("{:#?}", v);
 
-        // Serialize back to YAML using serde_saphyr and print it:
+        // Serialize back to YAML using serde_saphyr.
         let vv = serde_saphyr::to_string(&v).expect("Value should serialize back to YAML");
-        //eprintln!("{}", vv);
 
         // Minimal assertion to keep the test meaningful:
         assert!(!vv.is_empty(), "Serialized YAML should not be empty");
@@ -80,5 +77,3 @@ mod tests {
         aligned_keys_have_same_indentation(&vv);
     }
 }
-
-

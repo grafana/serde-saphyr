@@ -1,5 +1,5 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 use serde::Deserialize;
-use serde_saphyr;
 
 #[derive(Debug, Deserialize, PartialEq)]
 struct StructureWithBinaries {
@@ -39,7 +39,7 @@ fn test_serde_saphyr_binary_supporting() -> anyhow::Result<()> {
         name: Vec<u8>,
     }
 
-    let value: SupportsBinary  = serde_saphyr::from_str(content)?;
+    let value: SupportsBinary = serde_saphyr::from_str(content)?;
     assert_eq!(value.name, vec![31, 139, 8, 0]);
 
     Ok(())
@@ -54,27 +54,42 @@ fn test_serde_saphyr_binary_supporting_false() -> anyhow::Result<()> {
         name: Vec<u8>,
     }
 
-    let options = serde_saphyr::Options {
+    let options = serde_saphyr::options! {
         ignore_binary_tag_for_string: false, // Still should be fine as the target is not string
-        .. serde_saphyr::Options::default()
     };
 
-    let value: SupportsBinary  = serde_saphyr::from_str_with_options(content, options)?;
+    let value: SupportsBinary = serde_saphyr::from_str_with_options(content, options)?;
     assert_eq!(value.name, vec![31, 139, 8, 0]);
 
     Ok(())
 }
 
-
 #[test]
 fn test_serde_saphyr_json_value() -> anyhow::Result<()> {
     let content = "name: !!binary H4sIAA==";
-    let options = serde_saphyr::Options {
+    let options = serde_saphyr::options! {
         ignore_binary_tag_for_string: true,
-        .. serde_saphyr::Options::default()
     };
 
-    let value: serde_json::Value  = serde_saphyr::from_str_with_options(content, options)?;
+    let value: serde_json::Value = serde_saphyr::from_str_with_options(content, options)?;
     assert_eq!(value["name"], "H4sIAA==");
     Ok(())
+}
+
+#[test]
+fn binary_tag_rejects_padding_inside_quad() {
+    #[derive(Deserialize)]
+    struct SupportsBinary {
+        #[allow(dead_code)]
+        name: Vec<u8>,
+    }
+
+    let Err(err) = serde_saphyr::from_str::<SupportsBinary>("name: !!binary AA=A\n") else {
+        panic!("padding is only valid at the end of a base64 quantum");
+    };
+
+    assert!(matches!(
+        err.without_snippet(),
+        serde_saphyr::Error::InvalidBinaryBase64 { .. }
+    ));
 }

@@ -19,17 +19,12 @@
 
 use serde::Deserialize;
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Default)]
 enum Tree {
+    #[default]
     Oak,
     Acer,
     Birch,
-}
-
-impl Default for Tree {
-    fn default() -> Self {
-        Tree::Oak
-    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -81,14 +76,10 @@ impl Robot {
 
     fn turn(&mut self, dir: Direction) {
         self.facing = match (self.facing, dir) {
-            (Facing::North, Direction::Left) => Facing::West,
-            (Facing::North, Direction::Right) => Facing::East,
-            (Facing::East, Direction::Left) => Facing::North,
-            (Facing::East, Direction::Right) => Facing::South,
-            (Facing::South, Direction::Left) => Facing::East,
-            (Facing::South, Direction::Right) => Facing::West,
-            (Facing::West, Direction::Left) => Facing::South,
-            (Facing::West, Direction::Right) => Facing::North,
+            (Facing::North, Direction::Left) | (Facing::South, Direction::Right) => Facing::West,
+            (Facing::North, Direction::Right) | (Facing::South, Direction::Left) => Facing::East,
+            (Facing::East, Direction::Left) | (Facing::West, Direction::Right) => Facing::North,
+            (Facing::East, Direction::Right) | (Facing::West, Direction::Left) => Facing::South,
         };
     }
 
@@ -102,7 +93,7 @@ impl Robot {
             };
             let nx = self.x + dx;
             let ny = self.y + dy;
-            if nx >= 0 && nx <= 9 && ny >= 0 && ny <= 7 {
+            if (0..=9).contains(&nx) && (0..=7).contains(&ny) {
                 self.x = nx;
                 self.y = ny;
             } else {
@@ -125,12 +116,12 @@ impl Robot {
 }
 
 fn print_field(field: &[[char; 10]; 8], rx: i32, ry: i32) {
-    for y in (0..8).rev() {
-        for x in 0..10 {
+    for (y, row) in field.iter().enumerate().rev() {
+        for (x, ch) in row.iter().enumerate() {
             if x as i32 == rx && y as i32 == ry {
                 print!("R");
             } else {
-                print!("{}", field[y][x]);
+                print!("{ch}");
             }
         }
         println!();
@@ -217,7 +208,7 @@ program:
             Command::Turn(d) => robot.turn(d),
             Command::Plant(opt_tree) => {
                 let tree = opt_tree.unwrap_or(Tree::Oak);
-                robot.plant(&mut field, tree)
+                robot.plant(&mut field, tree);
             }
         }
     }

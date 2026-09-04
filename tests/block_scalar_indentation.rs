@@ -1,5 +1,5 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 use serde::{Deserialize, Serialize};
-use serde_saphyr::SerializerOptions;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Address {
@@ -24,13 +24,7 @@ fn nested_mapping_block_scalar_body_is_correctly_indented() -> anyhow::Result<()
         },
     };
 
-    // Use prefer_block_scalars to enable block scalar style for multiline strings
-    let opts = SerializerOptions {
-        prefer_block_scalars: true,
-        ..Default::default()
-    };
-    let mut yaml = String::new();
-    serde_saphyr::to_fmt_writer_with_options(&mut yaml, &w, opts)?;
+    let yaml = serde_saphyr::to_string(&w)?;
 
     // Expect the following shape (indentation significant):
     // address:
@@ -38,11 +32,25 @@ fn nested_mapping_block_scalar_body_is_correctly_indented() -> anyhow::Result<()
     //     line A
     //     line B
     //   city: Town
-    assert!(yaml.contains("address:\n  lines: |\n    line A\n    line B\n  city: Town\n"), "Unexpected YAML:\n{yaml}");
+    assert!(
+        yaml.contains("address:\n  lines: |\n    line A\n    line B\n  city: Town\n"),
+        "Unexpected YAML:\n{yaml}"
+    );
 
     // And ensure it round-trips
     let w2: Wrapper = serde_saphyr::from_str(&yaml)?;
     assert_eq!(w, w2);
 
     Ok(())
+}
+
+#[test]
+fn nested_folded_scalar_content_must_be_indented() {
+    for yaml in ["key: >\nline1\n", "- >\nline1\n"] {
+        let result = serde_saphyr::from_str::<serde_json::Value>(yaml);
+        assert!(
+            result.is_err(),
+            "unindented nested folded-scalar content must be rejected: {yaml:?}"
+        );
+    }
 }

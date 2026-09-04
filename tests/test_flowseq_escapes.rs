@@ -1,3 +1,4 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 use serde_saphyr::FlowSeq;
 
 // Repro for bug report and extended coverage:
@@ -48,19 +49,17 @@ fn flowseq_strings_are_quoted_when_needed() -> anyhow::Result<()> {
     let yaml = serde_saphyr::to_string(&FlowSeq(&samples))?;
 
     // Expect all elements to be appropriately quoted/escaped in a flow sequence, with trailing newline.
-    // The current implementation uses single quotes for many strings.
-    // Note: Some special characters like '#', '.', '-' use single quotes in flow context.
     let serialized = concat!(
-        r##"['a, [], b', '{', '}', '[', ']', ',', '#', ':', '@', '`', "##,
-        r##"'n', "true", "False", "~", "null", "YES", "no", "off", "On", "100", "1e3", "3.14", "##,
-        r##".nan, -.inf, ' leading', He said "hi", C:\path, "line1\nline2", "##,
+        r##"["a, [], b", "{", "}", "[", "]", ",", '#', ":", "@", "`", "##,
+        r##""n", "true", "False", "~", "null", "YES", "no", "off", "On", "100", "1e3", "3.14", "##,
+        r##"".nan", "-.inf", " leading", He said "hi", C:\path, "line1\nline2", "##,
         r##""\tindent", '.', '-']"##,
         "\n"
     );
 
     assert_eq!(yaml, serialized, "Unexpected YAML output: {yaml}");
 
-    let deserialized: Vec<String> = serde_saphyr::from_str(&serialized)?;
+    let deserialized: Vec<String> = serde_saphyr::from_str(serialized)?;
     assert_eq!(samples, deserialized);
 
     Ok(())

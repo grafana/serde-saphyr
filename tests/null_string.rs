@@ -1,25 +1,18 @@
-#[test]
-fn string_from_plain_null_errors() {
-    // Plain null keyword should not deserialize into String
-    let yaml = "null";
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
+use rstest::rstest;
+use serde_saphyr::Error;
+
+#[rstest]
+#[case::plain_null("null")]
+#[case::tilde("~")]
+#[case::tagged_null("!!null")]
+fn string_from_null_errors(#[case] yaml: &str) {
     let err =
         serde_saphyr::from_str::<String>(yaml).expect_err("expected error for null -> String");
-    let msg = format!("{}", err);
-    assert!(
-        msg.contains("cannot deserialize null into string"),
-        "unexpected error message: {msg}"
-    );
-}
-
-#[test]
-fn string_from_tilde_errors() {
-    let yaml = "~";
-    let err = serde_saphyr::from_str::<String>(yaml).expect_err("expected error for ~ -> String");
-    let msg = format!("{}", err);
-    assert!(
-        msg.contains("cannot deserialize null into string"),
-        "unexpected error message: {msg}"
-    );
+    assert!(matches!(
+        err.without_snippet(),
+        Error::NullIntoString { .. }
+    ));
 }
 
 #[test]
@@ -52,18 +45,6 @@ fn string_from_single_quoted_null_ok() {
 }
 
 #[test]
-fn string_from_tagged_null_errors() {
-    let yaml = "!!null";
-    let err =
-        serde_saphyr::from_str::<String>(yaml).expect_err("expected error for !!null -> String");
-    let msg = format!("{}", err);
-    assert!(
-        msg.contains("cannot deserialize null into string"),
-        "unexpected error message: {msg}"
-    );
-}
-
-#[test]
 fn rv_second() {
     #[derive(Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
     pub struct TestStruct {
@@ -77,7 +58,7 @@ a: abc
 b: null
 c: ghi
 "#;
-    let deserialized = serde_saphyr::from_str::<TestStruct>(&value).map_err(|inp| inp.to_string());
+    let deserialized = serde_saphyr::from_str::<TestStruct>(value).map_err(|inp| inp.to_string());
     assert_eq!(
         deserialized,
         Ok(TestStruct {

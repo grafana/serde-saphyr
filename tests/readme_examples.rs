@@ -1,3 +1,4 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 use serde::{Deserialize, Serialize};
 use serde_saphyr::{RcAnchor, RcWeakAnchor};
 use std::collections::HashMap;
@@ -167,27 +168,12 @@ fn serialize_anchors() {
         name: "node two".to_string(),
     }));
 
-    // Strong anchors: repeated references produce an anchor + aliases
-    let data = vec![
-        n1.clone(),
-        n1.clone(),
-        n1.clone(),
-        n2.clone(),
-        n1.clone(),
-        n2.clone(),
-    ];
-    println!(
-        "{}",
-        serde_saphyr::to_string(&data).expect("Must serialize strong anchors")
-    );
-
     // Weak anchors: present (upgradable) weak created from an existing strong anchor
     let weak_n1: RcWeakAnchor<Node> = RcWeakAnchor::from(&n1.0);
     let weak_n2: RcWeakAnchor<Node> = RcWeakAnchor::from(&n2.0);
 
     let serialize = (n1.clone(), n2.clone(), weak_n1, weak_n2);
     let yaml = serde_saphyr::to_string(&serialize).expect("Must serialize strong and weak anchors");
-    println!("{}", yaml);
 
     let deserialized: (
         RcAnchor<Node>,
@@ -214,5 +200,47 @@ fn serialize_anchors() {
             .expect("Node 2 still her and should be upgradable")
             .name,
         n2.name
+    );
+}
+
+#[cfg(feature = "properties")]
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+struct Config {
+    database_url: String,
+    mode: String,
+}
+
+#[cfg(feature = "properties")]
+fn property_map() -> Result<Config, serde_saphyr::Error> {
+    use serde_saphyr::{from_str_with_options, options};
+    use std::collections::HashMap;
+    let mut properties = HashMap::new();
+    properties.insert(
+        "DATABASE_URL".to_string(),
+        "postgres://db.example/app".to_string(),
+    );
+    properties.insert("MODE".to_string(), "production".to_string());
+
+    let options = options! {}.with_properties(properties);
+
+    let yaml = r#"
+        database_url: ${DATABASE_URL}
+        mode: ${MODE}
+"#;
+
+    let parsed: Config = from_str_with_options(yaml, options)?;
+    Ok(parsed)
+}
+
+#[test]
+#[cfg(feature = "properties")]
+fn property_map_example_works() {
+    let parsed = property_map().unwrap();
+    assert_eq!(
+        parsed,
+        Config {
+            database_url: "postgres://db.example/app".to_string(),
+            mode: "production".to_string(),
+        }
     );
 }

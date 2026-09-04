@@ -1,7 +1,7 @@
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_saphyr::SerializerOptions;
 
 // 1. A structure with int, float, boolean, string fields
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,22 +120,21 @@ fn serialize_nested_variant_enums() {
         }
     }
 
-    // Also exercise to_writer and to_writer_with_indent
+    // Also exercise the fmt writer entry points.
     let v = Outer::Beta {
         inner: Inner::Unit,
         note: "ok".into(),
     };
     let mut buf = String::new();
-    serde_saphyr::to_fmt_writer(&mut buf, &v).expect("to_writer works");
+    serde_saphyr::to_fmt_writer(&mut buf, &v).expect("to_fmt_writer works");
     assert!(!buf.is_empty());
     let mut buf2 = String::new();
-    let opts = serde_saphyr::SerializerOptions {
+    let opts = serde_saphyr::ser_options! {
         indent_step: 4,
         anchor_generator: None,
-        ..Default::default()
     };
     serde_saphyr::to_fmt_writer_with_options(&mut buf2, &v, opts)
-        .expect("to_writer_with_options works");
+        .expect("to_fmt_writer_with_options works");
     assert!(!buf2.is_empty());
 }
 
@@ -147,10 +146,14 @@ struct VecOfMaps {
 #[test]
 fn serialize_array_of_empty_maps() {
     let v = VecOfMaps {
-        vec: vec![Default::default(), Default::default(), Default::default()],
+        vec: vec![
+            BTreeMap::default(),
+            BTreeMap::default(),
+            BTreeMap::default(),
+        ],
     };
     let mut buf = String::new();
-    serde_saphyr::to_fmt_writer(&mut buf, &v).expect("to_writer works");
+    serde_saphyr::to_fmt_writer(&mut buf, &v).expect("to_fmt_writer works");
     let v2: VecOfMaps = serde_saphyr::from_str(&buf).expect("deserialize just serialized data");
     assert_eq!(v, v2);
 }
@@ -158,10 +161,14 @@ fn serialize_array_of_empty_maps() {
 #[test]
 fn serialize_array_of_empty_maps_to_io() {
     let v = VecOfMaps {
-        vec: vec![Default::default(), Default::default(), Default::default()],
+        vec: vec![
+            BTreeMap::default(),
+            BTreeMap::default(),
+            BTreeMap::default(),
+        ],
     };
     let mut buf: Vec<u8> = Vec::new();
-    serde_saphyr::to_io_writer(&mut buf, &v).expect("to_writer works");
+    serde_saphyr::to_io_writer(&mut buf, &v).expect("to_io_writer works");
     let s = String::from_utf8(buf).expect("valid utf-8");
     let v2: VecOfMaps = serde_saphyr::from_str(&s).expect("deserialize just serialized data");
     assert_eq!(v, v2);
@@ -169,15 +176,36 @@ fn serialize_array_of_empty_maps_to_io() {
 
 #[test]
 fn test_invalid_options() {
-    let mut out = String::new();
-    let mut ovec = Vec::new();
-    let invalid_options = SerializerOptions {
-        indent_step: 0,
-        ..SerializerOptions::default()
-    };
-
+    // Use a non-literal expression so this remains a runtime error (the macro enforces
+    // the valid range at compile time for literal values).
     let object = VecOfMaps { vec: vec![] };
+    for indent_step in [0, 65, usize::MAX] {
+        let mut out = String::new();
+        let mut ovec = Vec::new();
+        let invalid_options = serde_saphyr::ser_options! { indent_step: indent_step };
 
-    assert!(serde_saphyr::to_io_writer_with_options(&mut ovec, &object, invalid_options).is_err());
-    assert!(serde_saphyr::to_fmt_writer_with_options(&mut out, &object, invalid_options).is_err());
+        assert!(
+            serde_saphyr::to_io_writer_with_options(&mut ovec, &object, invalid_options.clone(),)
+                .is_err()
+        );
+        assert!(
+            serde_saphyr::to_fmt_writer_with_options(&mut out, &object, invalid_options).is_err()
+        );
+        assert!(out.is_empty());
+        assert!(ovec.is_empty());
+    }
+}
+
+#[test]
+fn invalid_options_are_rejected_for_empty_document_lists() {
+    let indent_step = 65;
+    let invalid_options = serde_saphyr::ser_options! { indent_step: indent_step };
+
+    let err = serde_saphyr::to_string_multiple_with_options::<i32>(&[], invalid_options)
+        .expect_err("options must be validated even when there are no documents");
+    assert!(matches!(
+        err,
+        serde_saphyr::ser_error::Error::InvalidOptions(message)
+            if message == "indent_step must be in 1..=64"
+    ));
 }

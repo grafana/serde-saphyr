@@ -1,5 +1,5 @@
-
-use anyhow::{Context};
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -15,7 +15,7 @@ pub struct Settings {
     pub match_partial: bool,
 
     #[serde(rename = "1000")]
-    pub the_thousand: usize
+    pub the_thousand: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -23,12 +23,11 @@ struct Root {
     pub settings: Settings,
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parse_and_assert_settings()-> anyhow::Result<()> {
+    fn parse_and_assert_settings() -> anyhow::Result<()> {
         let yaml = r#"
 settings:
     endpoint: "http://localhost/api/search/instant"
@@ -40,8 +39,8 @@ settings:
     1000: 1001
 "#;
 
-        let root: Root = serde_saphyr::from_str(yaml)
-            .with_context(|| "Failed to deserialize YAML into Root")?;
+        let root: Root =
+            serde_saphyr::from_str(yaml).with_context(|| "Failed to deserialize YAML into Root")?;
         let settings = root.settings;
 
         // Exact assertions
@@ -49,13 +48,16 @@ settings:
         assert_eq!(settings.limit, 50);
         assert_eq!(settings.site_language, "en");
         assert_eq!(settings.restrict, "all");
-        assert_eq!(settings.match_partial, false);
+        assert!(!settings.match_partial);
         assert_eq!(settings.the_thousand, 1001);
 
         // Languages list equality (order is preserved from YAML)
         let expected = vec![
-            "lzh","en","pgd","kho","pli","pra","san","xct","xto","uig"
-        ].into_iter().map(String::from).collect::<Vec<_>>();
+            "lzh", "en", "pgd", "kho", "pli", "pra", "san", "xct", "xto", "uig",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
         assert_eq!(settings.selected_languages, expected);
 
         Ok(())

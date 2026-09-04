@@ -1,7 +1,11 @@
+#[cfg(feature = "deserialize")]
 use crate::de::{Error, Location};
-use saphyr_parser::ScalarStyle;
-use std::str::FromStr;
+#[cfg(feature = "deserialize")]
 use crate::tags::SfTag;
+#[cfg(feature = "deserialize")]
+use granit_parser::ScalarStyle;
+#[cfg(feature = "deserialize")]
+use std::str::FromStr;
 
 /// Parse a YAML 1.1 boolean from a &str (handles the "Norway problem").
 ///
@@ -26,41 +30,49 @@ pub(crate) fn parse_yaml11_bool(s: &str) -> Result<bool, String> {
     {
         Ok(false)
     } else {
-        Err(format!("invalid YAML 1.1 bool: `{}`", s))
+        Err(format!("invalid YAML 1.1 bool: `{s}`"))
     }
 }
 
+#[cfg(feature = "deserialize")]
 fn parse_digits_u128(digits: &str, radix: u32) -> Option<u128> {
     let mut val: u128 = 0;
     let mut saw = false;
-    for b in digits.as_bytes() {
-        match *b {
-            b'_' => continue,
+    let bytes = digits.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'_' => {
+                let prev_ok = i > 0 && bytes[i - 1] != b'_';
+                let next_ok = i + 1 < bytes.len() && bytes[i + 1] != b'_';
+                if !prev_ok || !next_ok {
+                    return None;
+                }
+            }
             b'0'..=b'9' => {
-                let d = (b - b'0') as u32;
+                let d = u32::from(b - b'0');
                 if d >= radix {
                     return None;
                 }
-                val = val.checked_mul(radix as u128)?;
-                val = val.checked_add(d as u128)?;
+                val = val.checked_mul(u128::from(radix))?;
+                val = val.checked_add(u128::from(d))?;
                 saw = true;
             }
             b'a'..=b'f' if radix > 10 => {
-                let d = 10 + (b - b'a') as u32;
+                let d = 10 + u32::from(b - b'a');
                 if d >= radix {
                     return None;
                 }
-                val = val.checked_mul(radix as u128)?;
-                val = val.checked_add(d as u128)?;
+                val = val.checked_mul(u128::from(radix))?;
+                val = val.checked_add(u128::from(d))?;
                 saw = true;
             }
             b'A'..=b'F' if radix > 10 => {
-                let d = 10 + (b - b'A') as u32;
+                let d = 10 + u32::from(b - b'A');
                 if d >= radix {
                     return None;
                 }
-                val = val.checked_mul(radix as u128)?;
-                val = val.checked_add(d as u128)?;
+                val = val.checked_mul(u128::from(radix))?;
+                val = val.checked_add(u128::from(d))?;
                 saw = true;
             }
             _ => return None,
@@ -69,14 +81,22 @@ fn parse_digits_u128(digits: &str, radix: u32) -> Option<u128> {
     if saw { Some(val) } else { None }
 }
 
+#[cfg(feature = "deserialize")]
 fn parse_decimal_unsigned_u128(digits: &str) -> Option<u128> {
     let mut val: u128 = 0;
     let mut saw = false;
-    for b in digits.as_bytes() {
-        match *b {
-            b'_' => continue,
+    let bytes = digits.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'_' => {
+                let prev_ok = i > 0 && bytes[i - 1] != b'_';
+                let next_ok = i + 1 < bytes.len() && bytes[i + 1] != b'_';
+                if !prev_ok || !next_ok {
+                    return None;
+                }
+            }
             b'0'..=b'9' => {
-                let d = (b - b'0') as u128;
+                let d = u128::from(b - b'0');
                 val = val.checked_mul(10)?;
                 val = val.checked_add(d)?;
                 saw = true;
@@ -87,16 +107,24 @@ fn parse_decimal_unsigned_u128(digits: &str) -> Option<u128> {
     if saw { Some(val) } else { None }
 }
 
+#[cfg(feature = "deserialize")]
 fn parse_decimal_signed_i128(digits: &str, neg: bool) -> Option<i128> {
     if neg {
         // Accumulate as negative to allow i128::MIN
         let mut val: i128 = 0;
         let mut saw = false;
-        for b in digits.as_bytes() {
-            match *b {
-                b'_' => continue,
+        let bytes = digits.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            match b {
+                b'_' => {
+                    let prev_ok = i > 0 && bytes[i - 1] != b'_';
+                    let next_ok = i + 1 < bytes.len() && bytes[i + 1] != b'_';
+                    if !prev_ok || !next_ok {
+                        return None;
+                    }
+                }
                 b'0'..=b'9' => {
-                    let d = (b - b'0') as i128;
+                    let d = i128::from(b - b'0');
                     val = val.checked_mul(10)?;
                     val = val.checked_sub(d)?;
                     saw = true;
@@ -108,11 +136,18 @@ fn parse_decimal_signed_i128(digits: &str, neg: bool) -> Option<i128> {
     } else {
         let mut val: i128 = 0;
         let mut saw = false;
-        for b in digits.as_bytes() {
-            match *b {
-                b'_' => continue,
+        let bytes = digits.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            match b {
+                b'_' => {
+                    let prev_ok = i > 0 && bytes[i - 1] != b'_';
+                    let next_ok = i + 1 < bytes.len() && bytes[i + 1] != b'_';
+                    if !prev_ok || !next_ok {
+                        return None;
+                    }
+                }
                 b'0'..=b'9' => {
-                    let d = (b - b'0') as i128;
+                    let d = i128::from(b - b'0');
                     val = val.checked_mul(10)?;
                     val = val.checked_add(d)?;
                     saw = true;
@@ -124,6 +159,7 @@ fn parse_decimal_signed_i128(digits: &str, neg: bool) -> Option<i128> {
     }
 }
 
+#[cfg(feature = "deserialize")]
 pub(crate) fn parse_int_signed<T>(
     s: &str,
     ty: &'static str,
@@ -133,6 +169,8 @@ pub(crate) fn parse_int_signed<T>(
 where
     T: TryFrom<i128>,
 {
+    let invalid = || Error::InvalidScalar { ty, location };
+
     let t = s.trim();
     let (neg, rest) = match t.strip_prefix('+') {
         Some(r) => (false, r),
@@ -144,28 +182,29 @@ where
 
     let (radix, digits) = radix_and_digits(legacy_octal, rest);
     if radix == 10 {
-        let val_i128 = parse_decimal_signed_i128(digits, neg)
-            .ok_or_else(|| Error::msg(format!("invalid {ty}")).with_location(location))?;
-        return T::try_from(val_i128)
-            .map_err(|_| Error::msg(format!("invalid {ty}")).with_location(location));
+        // Yaml 1.2 forbids decimal integer literals starting with zero.
+        if digits.starts_with('0') && digits != "0" {
+            return Err(invalid());
+        }
+        let val_i128 = parse_decimal_signed_i128(digits, neg).ok_or_else(invalid)?;
+        return T::try_from(val_i128).map_err(|_| invalid());
     }
 
-    let mag = parse_digits_u128(digits, radix)
-        .ok_or_else(|| Error::msg(format!("invalid {ty}")).with_location(location))?;
+    let mag = parse_digits_u128(digits, radix).ok_or_else(invalid)?;
     let val_i128: i128 = if neg {
-        let mag_i128: i128 = mag
-            .try_into()
-            .map_err(|_| Error::msg(format!("invalid {ty}")).with_location(location))?;
-        mag_i128
-            .checked_neg()
-            .ok_or_else(|| Error::msg(format!("invalid {ty}")).with_location(location))?
+        if mag == (i128::MAX as u128) + 1 {
+            i128::MIN
+        } else {
+            let mag_i128: i128 = mag.try_into().map_err(|_| invalid())?;
+            mag_i128.checked_neg().ok_or_else(invalid)?
+        }
     } else {
-        mag.try_into()
-            .map_err(|_| Error::msg(format!("invalid {ty}")).with_location(location))?
+        mag.try_into().map_err(|_| invalid())?
     };
-    T::try_from(val_i128).map_err(|_| Error::msg(format!("invalid {ty}")).with_location(location))
+    T::try_from(val_i128).map_err(|_| invalid())
 }
 
+#[cfg(feature = "deserialize")]
 pub(crate) fn parse_int_unsigned<T>(
     s: &str,
     ty: &'static str,
@@ -175,57 +214,87 @@ pub(crate) fn parse_int_unsigned<T>(
 where
     T: TryFrom<u128>,
 {
+    let invalid = || Error::InvalidScalar { ty, location };
+
     let t = s.trim();
     if t.starts_with('-') {
-        return Err(Error::msg(format!("invalid {ty}")).with_location(location));
+        return Err(invalid());
     }
     let rest = t.strip_prefix('+').unwrap_or(t);
     let (radix, digits) = radix_and_digits(legacy_octal, rest);
 
     if radix == 10 {
-        let val_u128 = parse_decimal_unsigned_u128(digits)
-            .ok_or_else(|| Error::msg(format!("invalid {ty}")).with_location(location))?;
-        return T::try_from(val_u128)
-            .map_err(|_| Error::msg(format!("invalid {ty}")).with_location(location));
+        // Yaml 1.2 forbids decimal integer literals starting with zero.
+        if digits.starts_with('0') && digits != "0" {
+            return Err(invalid());
+        }
+        let val_u128 = parse_decimal_unsigned_u128(digits).ok_or_else(invalid)?;
+        return T::try_from(val_u128).map_err(|_| invalid());
     }
 
-    let mag = parse_digits_u128(digits, radix)
-        .ok_or_else(|| Error::msg(format!("invalid {ty}")).with_location(location))?;
-    T::try_from(mag).map_err(|_| Error::msg(format!("invalid {ty}")).with_location(location))
+    let mag = parse_digits_u128(digits, radix).ok_or_else(invalid)?;
+    T::try_from(mag).map_err(|_| invalid())
 }
 
+#[cfg(feature = "deserialize")]
 fn radix_and_digits(legacy_octal: bool, rest: &str) -> (u32, &str) {
     let (radix, digits) =
         if let Some(r) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-            (16u32, r)
+            (16u32, normalize_prefixed_digits(legacy_octal, r))
         } else if let Some(r) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-            (8u32, r)
+            (8u32, normalize_prefixed_digits(legacy_octal, r))
         } else if let Some(r) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
-            (2u32, r)
-        } else if legacy_octal && is_yaml11_octal(rest) {
-            // YAML 1.1 octal: leading 0 followed by octal digits (0-7)
-            // e.g., 0755 -> octal 755 = decimal 493
-            (8u32, &rest[1..])
+            (2u32, normalize_prefixed_digits(legacy_octal, r))
+        } else if legacy_octal && rest.starts_with('0') {
+            if rest == "0" {
+                // 0 is 0 and not empty string
+                (8u32, "0")
+            } else {
+                (8u32, normalize_prefixed_digits(legacy_octal, &rest[1..]))
+            }
         } else {
             (10u32, rest)
         };
     (radix, digits)
 }
 
-/// Check if a string is a YAML 1.1 octal number.
-/// YAML 1.1 octal numbers start with 0 and contain only octal digits (0-7).
-/// Examples: 0755, 0644, 00 (which is just 0)
-fn is_yaml11_octal(s: &str) -> bool {
-    // Must start with '0' and have at least 2 characters (0 followed by something)
-    if !s.starts_with('0') || s.len() < 2 {
-        return false;
+#[cfg(feature = "deserialize")]
+fn normalize_prefixed_digits(legacy_octal: bool, digits: &str) -> &str {
+    if legacy_octal {
+        digits.strip_prefix('_').unwrap_or(digits)
+    } else {
+        digits
     }
-    // All remaining characters must be octal digits (0-7)
-    s[1..].chars().all(|c| matches!(c, '0'..='7'))
 }
 
-#[cfg(feature = "robotics")]
-pub(crate) fn parse_yaml12_float<T>(s: &str, location: Location, tag: SfTag, angle_conversions: bool) -> Result<T, Error>
+#[cfg(feature = "deserialize")]
+fn parse_yaml12_finite_float_fallback<T>(t: &str, location: Location) -> Result<T, Error>
+where
+    T: FromStr,
+    T: num_traits::Float,
+{
+    let value = t.parse::<T>().map_err(|_| Error::InvalidScalar {
+        ty: "floating point",
+        location,
+    })?;
+
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(Error::InvalidScalar {
+            ty: "floating point",
+            location,
+        })
+    }
+}
+
+#[cfg(all(feature = "deserialize", feature = "robotics"))]
+pub(crate) fn parse_yaml12_float<T>(
+    s: &str,
+    location: Location,
+    tag: SfTag,
+    angle_conversions: bool,
+) -> Result<T, Error>
 where
     T: FromStr + crate::robotics::FromF64,
     T: num_traits::Float,
@@ -239,18 +308,17 @@ where
         ".nan" | "+.nan" | "-.nan" => Ok(T::nan()),
         ".inf" | "+.inf" => Ok(T::infinity()),
         "-.inf" => Ok(T::neg_infinity()),
-        _ => t.parse::<T>().map_err(|_| {
-            Error::msg(format!(
-                "invalid floating point ({} value)",
-                std::any::type_name::<T>()
-            ))
-            .with_location(location)
-        }),
+        _ => parse_yaml12_finite_float_fallback(t, location),
     }
 }
 
-#[cfg(not(feature="robotics"))]
-pub(crate) fn parse_yaml12_float<T>(s: &str, location: Location, _tag: SfTag, _angle_conversions: bool) -> Result<T, Error>
+#[cfg(all(feature = "deserialize", not(feature = "robotics")))]
+pub(crate) fn parse_yaml12_float<T>(
+    s: &str,
+    location: Location,
+    _tag: SfTag,
+    _angle_conversions: bool,
+) -> Result<T, Error>
 where
     T: FromStr,
     T: num_traits::Float,
@@ -261,40 +329,69 @@ where
         ".nan" | "+.nan" | "-.nan" => Ok(T::nan()),
         ".inf" | "+.inf" => Ok(T::infinity()),
         "-.inf" => Ok(T::neg_infinity()),
-        // Rust's parser accepts "infinity"/"inf" but these are NOT valid YAML 1.2 floats.
-        // YAML 1.2 only allows .inf/.nan syntax. Reject these so they stay as plain strings.
-        // Note: We still let "nan"/"-nan" fall through to Rust's parser, which will return
-        // NaN. This causes them to be quoted (which is desired for safety).
-        "infinity" | "+infinity" | "-infinity" | "inf" | "+inf" | "-inf" => {
-            Err(Error::msg(format!(
-                "invalid YAML 1.2 float (bare {} not allowed, use .inf)",
-                lower
-            )).with_location(location))
-        }
-        _ => t.parse::<T>().map_err(|_| {
-            Error::msg(format!(
-                "invalid floating point ({} value)",
-                std::any::type_name::<T>()
-            ))
-                .with_location(location)
-        }),
+        _ => parse_yaml12_finite_float_fallback(t, location),
     }
 }
 
+#[cfg(feature = "deserialize")]
+/// Like [`parse_yaml12_float`], but a decimal/exponential literal that overflows `f64` to
+/// infinity (e.g. `1e999`, `9e400`) is treated as a successful non-finite parse instead of
+/// an error.
+///
+/// This is used only by `deserialize_any`'s typeless path (e.g. `serde_json::Value`), where
+/// non-finite floats are rejected by default, or represented as canonical strings when
+/// `reject_non_finite_typeless_float` is disabled, rather than causing an "invalid floating
+/// point" parse error. Elsewhere, overflowing literals continue to be rejected as invalid
+/// floats via [`parse_yaml12_float`], so this function must not replace it as the general
+/// entry point.
+///
+/// Deliberately narrower than a bare `str::parse::<f64>()`: Rust's parser also accepts
+/// alphabetic spellings (`inf`, `infinity`, `nan`) that YAML/serde-saphyr correctly keep as
+/// plain strings, so only numeral-shaped literals (optional sign, then a leading digit) are
+/// considered here.
+pub(crate) fn try_parse_float_incl_overflow(
+    s: &str,
+    location: Location,
+    tag: SfTag,
+    angle_conversions: bool,
+) -> Option<f64> {
+    if let Ok(v) = parse_yaml12_float::<f64>(s, location, tag, angle_conversions) {
+        return Some(v);
+    }
+
+    let t = s.trim();
+    let unsigned = t.strip_prefix(['+', '-']).unwrap_or(t);
+    if !unsigned.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        return None;
+    }
+
+    match t.parse::<f64>() {
+        Ok(v) if v.is_infinite() => Some(v),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "deserialize")]
 /// If we are not using Rust struct as schema, check if we should not be quoting the value.
-pub (crate) fn maybe_not_string(s: &str, style: &ScalarStyle) -> bool {
+pub(crate) fn maybe_not_string(s: &str, style: &ScalarStyle, strict_booleans: bool) -> bool {
     let location = Location::UNKNOWN;
-    if style == &ScalarStyle::Plain {
-        if parse_yaml12_float::<f64>(s, location, SfTag::None, false).is_ok() ||
-            parse_int_signed::<i128>(s, "i128", location, false).is_ok() ||
-            parse_yaml11_bool(s).is_ok() ||
-            scalar_is_nullish(s, &ScalarStyle::Plain) {
-            return true;
-        };
-    }
-    false
+    style == &ScalarStyle::Plain
+        && (parse_yaml12_float::<f64>(s, location, SfTag::None, false).is_ok()
+            || parse_int_signed::<i128>(s, "i128", location, false).is_ok()
+            || maybe_bool(s, strict_booleans)
+            || scalar_is_nullish(s, &ScalarStyle::Plain))
 }
 
+/// Check if a scalar looks like a YAML boolean, respecting `strict_booleans`.
+#[cfg(feature = "deserialize")]
+#[inline]
+fn maybe_bool(s: &str, strict: bool) -> bool {
+    if strict {
+        s.trim().eq_ignore_ascii_case("true") || s.trim().eq_ignore_ascii_case("false")
+    } else {
+        parse_yaml11_bool(s).is_ok()
+    }
+}
 
 /// True if a scalar is a YAML "null-like" value in non-`Option` contexts.
 ///
@@ -307,12 +404,23 @@ pub (crate) fn maybe_not_string(s: &str, style: &ScalarStyle) -> bool {
 ///
 /// Used by:
 /// - Unit handling and some edge cases where absence is tolerated.
+#[cfg(feature = "deserialize")]
 #[inline]
 pub(crate) fn scalar_is_nullish(value: &str, style: &ScalarStyle) -> bool {
     if !matches!(style, ScalarStyle::Plain) {
         return false;
     }
     value.is_empty() || value == "~" || value.eq_ignore_ascii_case("null")
+}
+
+#[cfg(feature = "deserialize")]
+#[inline]
+pub(crate) fn scalar_document_is_empty_or_null(
+    tag: &SfTag,
+    value: &str,
+    style: &ScalarStyle,
+) -> bool {
+    *tag == SfTag::Null || (*tag != SfTag::String && scalar_is_nullish(value, style))
 }
 
 /// True if a scalar should be turned into `None` for `Option<T>`.
@@ -326,6 +434,7 @@ pub(crate) fn scalar_is_nullish(value: &str, style: &ScalarStyle) -> bool {
 ///
 /// Used by:
 /// - `deserialize_option` only (does not affect other types).
+#[cfg(feature = "deserialize")]
 #[inline]
 pub(crate) fn scalar_is_nullish_for_option(value: &str, style: &ScalarStyle) -> bool {
     // For Option: treat empty unquoted scalar as null, and plain "~"/"null" as null.
@@ -333,6 +442,7 @@ pub(crate) fn scalar_is_nullish_for_option(value: &str, style: &ScalarStyle) -> 
     (matches!(style, ScalarStyle::Plain) && (value == "~" || value.eq_ignore_ascii_case("null"))) // plain_nullish
 }
 
+#[cfg(feature = "deserialize")]
 /// Returns `true` if the string represents a decimal number with a redundant leading zero,
 /// such as `0127`, `+0127`, or `-0127`.
 /// Explicit radices (`0x`, `0o`, `0b`) are excluded.
@@ -356,12 +466,18 @@ pub(crate) fn leading_zero_decimal(t: &str) -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "deserialize"))]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     fn sample_location() -> Location {
-        Location { row: 42, column: 7 }
+        Location {
+            line: 42,
+            column: 7,
+            span: crate::location::Span::UNKNOWN,
+            source_id: 0,
+        }
     }
 
     #[test]
@@ -394,31 +510,66 @@ mod tests {
     }
 
     #[test]
+    fn parse_int_signed_supports_i128_min_in_alternate_radices() {
+        let loc = sample_location();
+        let hex: i128 =
+            parse_int_signed("-0x80000000000000000000000000000000", "i128", loc, false).unwrap();
+        let binary_min = format!("-0b1{}", "0".repeat(127));
+        let binary: i128 = parse_int_signed(&binary_min, "i128", loc, false).unwrap();
+
+        assert_eq!(hex, i128::MIN);
+        assert_eq!(binary, i128::MIN);
+        assert!(
+            parse_int_signed::<i128>("0x80000000000000000000000000000000", "i128", loc, false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn parse_int_signed_rejects_invalid_underscores() {
+        let loc = sample_location();
+        // Leading underscore
+        assert!(parse_int_signed::<i32>("_1", "i32", loc, false).is_err());
+        // Trailing underscore
+        assert!(parse_int_signed::<i32>("1000_", "i32", loc, false).is_err());
+        // Double underscore
+        assert!(parse_int_signed::<i32>("1__0", "i32", loc, false).is_err());
+        // Valid underscores
+        assert!(parse_int_signed::<i32>("1000_1000", "i32", loc, false).is_ok());
+    }
+
+    #[test]
     fn parse_int_signed_honors_legacy_octal_prefixes() {
         let loc = sample_location();
-        // YAML 1.1 octal with double-zero prefix (00755)
         let value: i32 = parse_int_signed("00077", "i32", loc, true).unwrap();
         assert_eq!(value, 0o77);
+    }
 
-        // YAML 1.1 octal with single-zero prefix (0755 -> 493 decimal)
-        let value: i32 = parse_int_signed("0755", "i32", loc, true).unwrap();
-        assert_eq!(value, 0o755); // 493 decimal
+    #[test]
+    fn parse_int_signed_honors_legacy_prefix_underscores() {
+        let loc = sample_location();
 
-        // More octal tests
-        let value: i32 = parse_int_signed("0644", "i32", loc, true).unwrap();
-        assert_eq!(value, 0o644); // 420 decimal
+        let octal: i32 = parse_int_signed("0_10", "i32", loc, true).unwrap();
+        let plus_octal: i32 = parse_int_signed("+0_10", "i32", loc, true).unwrap();
+        let negative_octal: i32 = parse_int_signed("-0_10", "i32", loc, true).unwrap();
+        let hex: i32 = parse_int_signed("0x_10", "i32", loc, true).unwrap();
+        let explicit_octal: i32 = parse_int_signed("0o_10", "i32", loc, true).unwrap();
+        let binary: i32 = parse_int_signed("0b_10", "i32", loc, true).unwrap();
 
-        // 00 should be 0
-        let value: i32 = parse_int_signed("00", "i32", loc, true).unwrap();
-        assert_eq!(value, 0);
+        assert_eq!(octal, 0o10);
+        assert_eq!(plus_octal, 0o10);
+        assert_eq!(negative_octal, -0o10);
+        assert_eq!(hex, 0x10);
+        assert_eq!(explicit_octal, 0o10);
+        assert_eq!(binary, 0b10);
+    }
 
-        // Single 0 followed by 8 or 9 is NOT octal (invalid octal digits)
-        // Should be parsed as decimal
-        let value: i32 = parse_int_signed("09", "i32", loc, true).unwrap();
-        assert_eq!(value, 9); // decimal 9, not octal
+    #[test]
+    fn parse_int_signed_keeps_prefix_underscores_opt_in() {
+        let loc = sample_location();
 
-        let value: i32 = parse_int_signed("0123", "i32", loc, true).unwrap();
-        assert_eq!(value, 0o123); // 83 decimal
+        assert!(parse_int_signed::<i32>("0_10", "i32", loc, false).is_err());
+        assert!(parse_int_signed::<i32>("0x_10", "i32", loc, false).is_err());
     }
 
     #[test]
@@ -426,7 +577,7 @@ mod tests {
         let loc = sample_location();
         let err = parse_int_signed::<i64>("0x8000000000000000", "i64", loc, false).unwrap_err();
         match err {
-            Error::Message { location, .. } => assert_eq!(location, loc),
+            Error::InvalidScalar { location, .. } => assert_eq!(location, loc),
             other => panic!("unexpected error variant: {:?}", other),
         }
     }
@@ -436,9 +587,26 @@ mod tests {
         let loc = sample_location();
         let err = parse_int_unsigned::<u32>("-5", "u32", loc, false).unwrap_err();
         match err {
-            Error::Message { location, .. } => assert_eq!(location, loc),
+            Error::InvalidScalar { location, .. } => assert_eq!(location, loc),
             other => panic!("unexpected error variant: {:?}", other),
         }
+    }
+
+    #[test]
+    fn parse_int_unsigned_honors_legacy_prefix_underscores() {
+        let loc = sample_location();
+
+        let octal: u32 = parse_int_unsigned("0_10", "u32", loc, true).unwrap();
+        let plus_octal: u32 = parse_int_unsigned("+0_10", "u32", loc, true).unwrap();
+        let hex: u32 = parse_int_unsigned("0x_10", "u32", loc, true).unwrap();
+        let explicit_octal: u32 = parse_int_unsigned("0o_10", "u32", loc, true).unwrap();
+        let binary: u32 = parse_int_unsigned("0b_10", "u32", loc, true).unwrap();
+
+        assert_eq!(octal, 0o10);
+        assert_eq!(plus_octal, 0o10);
+        assert_eq!(hex, 0x10);
+        assert_eq!(explicit_octal, 0o10);
+        assert_eq!(binary, 0b10);
     }
 
     #[test]
@@ -455,14 +623,35 @@ mod tests {
         assert!(neg_inf.is_infinite() && neg_inf.is_sign_negative());
     }
 
+    #[rstest]
+    #[case::nan("nan")]
+    #[case::capital_nan("NaN")]
+    #[case::inf("inf")]
+    #[case::plus_inf("+inf")]
+    #[case::minus_inf("-inf")]
+    #[case::infinity("Infinity")]
+    #[case::plus_infinity("+Infinity")]
+    #[case::minus_infinity("-Infinity")]
+    fn parse_yaml12_float_rejects_rust_nonfinite_spellings(#[case] input: &str) {
+        assert!(parse_yaml12_float::<f64>(input, loc(), SfTag::None, false).is_err());
+    }
+
     fn loc() -> Location {
         // Replace with how you construct Location in your code
-        Location { row: 1, column: 1 }
+        Location {
+            line: 1,
+            column: 1,
+            span: crate::location::Span::UNKNOWN,
+            source_id: 0,
+        }
     }
 
     #[test]
     fn test_normal_values() {
-        assert_eq!(parse_yaml12_float::<f32>("1.5", loc(), SfTag::None, false).unwrap(), 1.5f32);
+        assert_eq!(
+            parse_yaml12_float::<f32>("1.5", loc(), SfTag::None, false).unwrap(),
+            1.5f32
+        );
         assert_eq!(
             parse_yaml12_float::<f32>("-123.456", loc(), SfTag::None, false).unwrap(),
             -123.456f32
@@ -471,8 +660,14 @@ mod tests {
 
     #[test]
     fn test_zero_values() {
-        assert_eq!(parse_yaml12_float::<f32>("0", loc(), SfTag::None, false).unwrap(), 0.0f32);
-        assert_eq!(parse_yaml12_float::<f32>("-0", loc(), SfTag::None, false).unwrap(), -0.0f32);
+        assert_eq!(
+            parse_yaml12_float::<f32>("0", loc(), SfTag::None, false).unwrap(),
+            0.0f32
+        );
+        assert_eq!(
+            parse_yaml12_float::<f32>("-0", loc(), SfTag::None, false).unwrap(),
+            -0.0f32
+        );
     }
 
     #[test]
@@ -491,7 +686,8 @@ mod tests {
     fn test_subnormal_preserved() {
         // Smallest positive subnormal f32
         let smallest = f32::from_bits(1) as f64;
-        let val: f32 = parse_yaml12_float(&format!("{}", smallest), loc(), SfTag::None, false).unwrap();
+        let val: f32 =
+            parse_yaml12_float(&format!("{}", smallest), loc(), SfTag::None, false).unwrap();
         assert_eq!(val, f32::from_bits(1));
     }
 

@@ -2,9 +2,8 @@
 //! we do not degrade the performance when working on features.
 
 use serde::Deserialize;
-use serde_saphyr::Options;
-use serde_saphyr::budget::Budget;
 use serde_saphyr::Error;
+use std::fmt::Write as _;
 use std::time::Instant;
 
 #[derive(Debug, Deserialize)]
@@ -51,9 +50,10 @@ fn build_large_yaml(target_size: usize) -> String {
         );
 
         for note_index in 0..20 {
-            entry.push_str(&format!(
-                "        - \"Note {note_index:02} for item {index:05}. This is repeated content to enlarge the YAML payload size considerably.\"\n"
-            ));
+            let _ = writeln!(
+                entry,
+                "        - \"Note {note_index:02} for item {index:05}. This is repeated content to enlarge the YAML payload size considerably.\""
+            );
         }
 
         yaml.push_str(&entry);
@@ -73,15 +73,19 @@ fn main() -> Result<(), Error> {
         yaml.len()
     );
 
-    let many: usize = 100_000_000_000_000;
+    // Use an effectively-unlimited budget while staying portable to 32-bit targets (e.g. wasm32).
+    let many: usize = usize::MAX;
     let start = Instant::now();
     let document: Document = serde_saphyr::from_str_with_options(
         &yaml,
-        Options {
-            budget: Some(Budget { max_reader_input_bytes: None,
+        serde_saphyr::options! {
+            budget: serde_saphyr::budget! {
+                max_reader_input_bytes: None,
                 max_events: many,
                 max_aliases: many,
                 max_anchors: many,
+                max_recorded_anchor_events: many,
+                max_recorded_anchor_bytes: many,
                 max_depth: many,
                 max_documents: many,
                 max_nodes: many,
@@ -90,8 +94,7 @@ fn main() -> Result<(), Error> {
                 enforce_alias_anchor_ratio: false,
                 alias_anchor_min_aliases: many,
                 alias_anchor_ratio_multiplier: many,
-            }),
-            ..Options::default()
+            },
         },
     )?;
     let elapsed = start.elapsed();

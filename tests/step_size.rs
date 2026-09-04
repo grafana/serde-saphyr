@@ -1,5 +1,4 @@
-use serde_saphyr::SerializerOptions;
-
+#![cfg(all(feature = "serialize", feature = "deserialize"))]
 #[test]
 fn changing_step_size_results_in_valid_yaml() {
     let value = serde_json::json!({
@@ -22,15 +21,12 @@ fn changing_step_size_results_in_valid_yaml() {
         ]
     });
 
-    let serializer_options = SerializerOptions {
+    let serializer_options = serde_saphyr::ser_options! {
         indent_step: 7,
-        ..Default::default()
     };
 
     let mut serialized = String::new();
     serde_saphyr::to_fmt_writer_with_options(&mut serialized, &value, serializer_options).unwrap();
-
-    println!("{}", serialized);
 
     let parsed: serde_json::Value = serde_saphyr::from_str(&serialized).unwrap();
     assert_eq!(parsed, value);
