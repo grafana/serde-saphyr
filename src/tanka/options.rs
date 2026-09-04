@@ -11,12 +11,12 @@
 //! struct Item { a: i32, b: bool }
 //!
 //! let mut buf = String::new();
-//! let opts = serde_saphyr::SerializerOptions {
+//! let opts = serde_saphyr::tanka::SerializerOptions {
 //!     indent_step: 4,
 //!     anchor_generator: Some(|id| format!("id{}/", id)),
 //!     ..Default::default()
 //! };
-//! serde_saphyr::to_fmt_writer_with_options(&mut buf, &Item { a: 1, b: true }, opts).unwrap();
+//! serde_saphyr::tanka::to_fmt_writer_with_options(&mut buf, &Item { a: 1, b: true }, opts).unwrap();
 //! assert!(buf.contains("a: 1"));
 //! ```
 

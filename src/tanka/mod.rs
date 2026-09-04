@@ -5,9 +5,10 @@
 //!
 //! Usage example:
 //!
-//! use serde_core::Serialize;
+//! use serde::Serialize;
 //! use std::rc::Rc;
-//! use serde_saphyr::{to_string, RcAnchor, LitStr, FlowSeq};
+//! use serde_saphyr::RcAnchor;
+//! use serde_saphyr::tanka::{to_string, FlowSeq, LitStr};
 //!
 //! #[derive(Serialize)]
 //! struct Cfg {
@@ -144,25 +145,25 @@ pub struct FlowMap<T>(pub T);
 ///
 /// Basic scalar with a comment in block style:
 /// ```rust
-/// use serde_core::Serialize;
+/// use serde::Serialize;
 ///
 /// // Re-exported from the crate root
-/// use serde_saphyr::Commented;
+/// use serde_saphyr::tanka::Commented;
 ///
-/// let out = serde_saphyr::to_string(&Commented(42, "answer".to_string())).unwrap();
+/// let out = serde_saphyr::tanka::to_string(&Commented(42, "answer".to_string())).unwrap();
 /// assert_eq!(out, "42 # answer\n");
 /// ```
 ///
 /// As a mapping value, still inline:
 /// ```rust
-/// use serde_core::Serialize;
-/// use serde_saphyr::Commented;
+/// use serde::Serialize;
+/// use serde_saphyr::tanka::Commented;
 ///
 /// #[derive(Serialize)]
 /// struct S { n: Commented<i32> }
 ///
 /// let s = S { n: Commented(5, "send five starships first".into()) };
-/// let out = serde_saphyr::to_string(&s).unwrap();
+/// let out = serde_saphyr::tanka::to_string(&s).unwrap();
 /// assert_eq!(out, "n: 5 # send five starships first\n");
 /// ```
 ///
@@ -196,17 +197,17 @@ pub struct Commented<T>(pub T, pub String);
 /// Top-level literal block string:
 /// ```rust
 /// let long = "line 1\nline 2\n".repeat(20);
-/// let out = serde_saphyr::to_string(&serde_saphyr::LitStr(&long)).unwrap();
+/// let out = serde_saphyr::tanka::to_string(&serde_saphyr::tanka::LitStr(&long)).unwrap();
 /// assert!(out.starts_with("|\n  "));
 /// ```
 ///
 /// As a mapping value (string without trailing newline uses strip indicator `|-`):
 /// ```rust
-/// use serde_core::Serialize;
+/// use serde::Serialize;
 /// #[derive(Serialize)]
-/// struct S { note: serde_saphyr::LitStr<'static> }
-/// let s = S { note: serde_saphyr::LitStr("a\nb") };
-/// let out = serde_saphyr::to_string(&s).unwrap();
+/// struct S { note: serde_saphyr::tanka::LitStr<'static> }
+/// let s = S { note: serde_saphyr::tanka::LitStr("a\nb") };
+/// let out = serde_saphyr::tanka::to_string(&s).unwrap();
 /// assert_eq!(out, "note: |-\n  a\n  b\n");
 /// ```
 #[derive(Clone, Copy)]
@@ -221,7 +222,7 @@ pub struct LitStr<'a>(pub &'a str);
 ///
 /// Example (string without trailing newline uses strip indicator `|-`):
 /// ```rust
-/// let out = serde_saphyr::to_string(&serde_saphyr::LitString("line 1\nline 2".to_string())).unwrap();
+/// let out = serde_saphyr::tanka::to_string(&serde_saphyr::tanka::LitString("line 1\nline 2".to_string())).unwrap();
 /// assert_eq!(out, "|-\n  line 1\n  line 2\n");
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -249,17 +250,17 @@ pub struct LitString(pub String);
 ///
 /// Top-level folded block string:
 /// ```rust
-/// let out = serde_saphyr::to_string(&serde_saphyr::FoldStr("line 1\nline 2")).unwrap();
+/// let out = serde_saphyr::tanka::to_string(&serde_saphyr::tanka::FoldStr("line 1\nline 2")).unwrap();
 /// assert_eq!(out, ">\n  line 1\n  line 2\n");
 /// ```
 ///
 /// As a mapping value:
 /// ```rust
-/// use serde_core::Serialize;
+/// use serde::Serialize;
 /// #[derive(Serialize)]
-/// struct S { note: serde_saphyr::FoldStr<'static> }
-/// let s = S { note: serde_saphyr::FoldStr("a\nb") };
-/// let out = serde_saphyr::to_string(&s).unwrap();
+/// struct S { note: serde_saphyr::tanka::FoldStr<'static> }
+/// let s = S { note: serde_saphyr::tanka::FoldStr("a\nb") };
+/// let out = serde_saphyr::tanka::to_string(&s).unwrap();
 /// assert_eq!(out, "note: >\n  a\n  b\n");
 /// ```
 #[derive(Clone, Copy)]
@@ -273,7 +274,7 @@ pub struct FoldStr<'a>(pub &'a str);
 ///
 /// Example
 /// ```rust
-/// let out = serde_saphyr::to_string(&serde_saphyr::FoldString("line 1\nline 2".to_string())).unwrap();
+/// let out = serde_saphyr::tanka::to_string(&serde_saphyr::tanka::FoldString("line 1\nline 2".to_string())).unwrap();
 /// assert_eq!(out, ">\n  line 1\n  line 2\n");
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
