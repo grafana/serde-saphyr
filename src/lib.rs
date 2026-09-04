@@ -109,6 +109,8 @@ mod span;
 mod spanned;
 #[cfg(any(feature = "serialize", feature = "deserialize"))]
 mod tag;
+#[cfg(feature = "serialize")]
+pub mod tanka;
 #[cfg(any(feature = "serialize", feature = "deserialize"))]
 mod wrappers;
 
