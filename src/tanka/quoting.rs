@@ -229,7 +229,7 @@ pub(crate) fn is_plain_block_value_safe(s: &str) -> bool {
     // Example: -forward.selectors={__name__="target_info"} is valid unquoted.
 
     // Trailing whitespace requires quoting (Go yaml.v2 behavior)
-    if bytes.last().map_or(false, |b| b.is_ascii_whitespace()) {
+    if bytes.last().is_some_and(|b| b.is_ascii_whitespace()) {
         return false;
     }
 

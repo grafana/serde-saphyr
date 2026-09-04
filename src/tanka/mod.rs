@@ -1680,13 +1680,12 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
                     // The block scalar body must be indented at least one more level than the
                     // header line. When block_scalar_indent_in_seq is set and we're a DIRECT
                     // item in a sequence (not inside an object), use absolute spaces.
-                    let spaces = if self.after_dash_depth.is_some()
-                        && self.current_map_depth.is_none()
-                        && self.block_scalar_indent_in_seq.is_some()
-                    {
-                        self.block_scalar_indent_in_seq.unwrap()
-                    } else {
-                        self.indent_step * (base + 1)
+                    let spaces = match (
+                        self.after_dash_depth.is_some() && self.current_map_depth.is_none(),
+                        self.block_scalar_indent_in_seq,
+                    ) {
+                        (true, Some(spaces)) => spaces,
+                        _ => self.indent_step * (base + 1),
                     };
                     // Precompute body indent string once for the entire block
                     let mut indent_buf: String = String::new();
@@ -2001,7 +2000,7 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
                     // This handles cases like: "Set to true for 'ACCEPT_AUTOMATIC' or false for 'ACCEPT_MANUAL'"
                     // but NOT: "EmptyDir represents... a pod's lifetime. More info: https://..."
                     let first_char = v.chars().next();
-                    let starts_with_letter = first_char.map_or(false, |c| c.is_ascii_alphabetic());
+                    let starts_with_letter = first_char.is_some_and(|c| c.is_ascii_alphabetic());
                     let has_colon_space = v.contains(": ");
                     // String can use folded scalar if:
                     // - starts with a letter (not with a single quote or other special char)
@@ -2053,16 +2052,15 @@ impl<'a, 'b, W: Write> Serializer for &'a mut YamlSer<'b, W> {
         }
         // Special-case: prefer single-quoted style for select 1-char punctuation to
         // match expected YAML output and Go yaml.v3 behavior ('.', '#', '-', '*').
-        if v.len() == 1 {
-            if let Some(ch) = v.chars().next() {
-                if ch == '.' || ch == '#' || ch == '-' || ch == '*' {
-                    self.out.write_char('\'')?;
-                    self.out.write_char(ch)?;
-                    self.out.write_char('\'')?;
-                    self.write_end_of_scalar()?;
-                    return Ok(());
-                }
-            }
+        if v.len() == 1
+            && let Some(ch) = v.chars().next()
+            && matches!(ch, '.' | '#' | '-' | '*')
+        {
+            self.out.write_char('\'')?;
+            self.out.write_char(ch)?;
+            self.out.write_char('\'')?;
+            self.write_end_of_scalar()?;
+            return Ok(());
         }
         self.write_plain_or_quoted_value(v)?;
         self.write_end_of_scalar()?;
@@ -3154,7 +3152,7 @@ impl<'a, 'b, W: Write> SerializeStructVariant for StructVariantSer<'a, 'b, W> {
 struct UsizeCapture {
     v: Option<usize>,
 }
-impl<'a> Serializer for &'a mut UsizeCapture {
+impl Serializer for &mut UsizeCapture {
     type Ok = ();
     type Error = Error;
 
@@ -3312,7 +3310,7 @@ impl UsizeCapture {
 struct BoolCapture {
     v: Option<bool>,
 }
-impl<'a> Serializer for &'a mut BoolCapture {
+impl Serializer for &mut BoolCapture {
     type Ok = ();
     type Error = Error;
 
@@ -3459,7 +3457,7 @@ impl BoolCapture {
 struct StrCapture {
     s: Option<String>,
 }
-impl<'a> Serializer for &'a mut StrCapture {
+impl Serializer for &mut StrCapture {
     type Ok = ();
     type Error = Error;
 
